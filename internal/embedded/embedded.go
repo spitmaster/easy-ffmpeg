@@ -45,10 +45,10 @@ func GetFFmpegBinary() (string, error) {
 	tempDir := os.TempDir()
 	tempPath := filepath.Join(tempDir, binaryName)
 
-	// 检查是否已存在且内容相同
+	// 检查是否已存在且大小相同（避免重复写入大文件）
 	if fileExists(tempPath) {
-		existingData, _ := os.ReadFile(tempPath)
-		if string(existingData) == string(data) {
+		existingInfo, _ := os.Stat(tempPath)
+		if existingInfo.Size() == int64(len(data)) {
 			return tempPath, nil
 		}
 	}
@@ -91,8 +91,8 @@ func GetFFprobeBinary() (string, error) {
 	tempPath := filepath.Join(tempDir, binaryName)
 
 	if fileExists(tempPath) {
-		existingData, _ := os.ReadFile(tempPath)
-		if string(existingData) == string(data) {
+		existingInfo, _ := os.Stat(tempPath)
+		if existingInfo.Size() == int64(len(data)) {
 			return tempPath, nil
 		}
 	}

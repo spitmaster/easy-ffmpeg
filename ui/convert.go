@@ -1,18 +1,24 @@
 package ui
 
 import (
+	"bufio"
 	"easy-ffmpeg/service"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
+
+// 当前运行的ffmpeg进程
+var currentCmd *exec.Cmd
+var cmdMutex sync.Mutex
 
 // 获取保存的输出目录
 func getSavedOutputDir() string {
@@ -40,6 +46,32 @@ func saveOutputDir(dir string) error {
 	return os.WriteFile(configPath, []byte(dir), 0644)
 }
 
+// 获取保存的输入文件目录
+func getSavedInputDir() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	configPath := filepath.Join(configDir, "easy-ffmpeg", "input_dir.txt")
+	if data, err := os.ReadFile(configPath); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
+}
+
+// 保存输入文件目录
+func saveInputDir(dir string) error {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return err
+	}
+	configPath := filepath.Join(configDir, "easy-ffmpeg", "input_dir.txt")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, []byte(dir), 0644)
+}
+
 // CreateConvertTab 创建视频转换标签页
 func CreateConvertTab() fyne.CanvasObject {
 	// 输入文件选择
@@ -51,17 +83,22 @@ func CreateConvertTab() fyne.CanvasObject {
 	outputEntry.SetPlaceHolder("输出文件名（不含扩展名）...")
 
 	inputBtn := widget.NewButton("选择文件", func() {
-		dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err == nil && reader != nil {
 				inputEntry.SetText(reader.URI().Path())
 				reader.Close()
 
-				// 自动设置输出文件名
+				// 保存输入文件目录
 				inputPath := reader.URI().Path()
+				inputDir := filepath.Dir(inputPath)
+				saveInputDir(inputDir)
+
+				// 自动设置输出文件名
 				ext := filepath.Ext(inputPath)
 				outputEntry.SetText(strings.TrimSuffix(filepath.Base(inputPath), ext) + "_converted")
 			}
 		}, mainWindow)
+		fd.Show()
 	})
 
 	inputRow := container.NewGridWithColumns(2, inputEntry, inputBtn)
@@ -114,10 +151,12 @@ func CreateConvertTab() fyne.CanvasObject {
 	logEntry := widget.NewMultiLineEntry()
 	logEntry.SetPlaceHolder("转码日志将显示在这里...")
 	logEntry.Disable()
-	logEntry.Resize(fyne.NewSize(800, 300))
 
-	// 开始按钮
-	startBtn := widget.NewButton("开始转码", func() {
+	// 开始按钮（先定义，后续填充回调）
+	startBtn := widget.NewButton("开始转码", nil)
+
+	// 开始按钮回调
+	startBtn.OnTapped = func() {
 		inputPath := inputEntry.Text
 		outputDir := outputDirEntry.Text
 		outputName := outputEntry.Text
@@ -184,36 +223,48 @@ func CreateConvertTab() fyne.CanvasObject {
 			cmd.Args = append([]string{"ffmpeg"}, args...)
 		}
 
+		// 保存当前命令引用
+		cmdMutex.Lock()
+		currentCmd = cmd
+		cmdMutex.Unlock()
+
+		// 禁用按钮避免重复点击
+		startBtn.Disable()
+
 		_, _ = cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
 
 		cmd.Start()
 
-		// 读取日志
+		// 读取日志并在主线程更新UI
 		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := stderr.Read(buf)
-				if n > 0 {
-					log := string(buf[:n])
-					logEntry.SetText(logEntry.Text + log)
-				}
-				if err != nil {
-					break
-				}
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				line := scanner.Text()
+				fyne.Do(func() {
+					logEntry.SetText(logEntry.Text + line + "\n")
+				})
 			}
+
+			// 转码完成
+			err := cmd.Wait()
+
+			// 清除命令引用
+			cmdMutex.Lock()
+			currentCmd = nil
+			cmdMutex.Unlock()
+
+			fyne.Do(func() {
+				startBtn.Enable()
+				if err != nil {
+					logEntry.SetText(logEntry.Text + fmt.Sprintf("\n转码失败: %v\n", err))
+					dialog.ShowError(fmt.Errorf("转码失败: %v", err), mainWindow)
+				} else {
+					logEntry.SetText(logEntry.Text + "\n转码完成!\n")
+					dialog.ShowInformation("完成", "转码成功!", mainWindow)
+				}
+			})
 		}()
-
-		// 等待完成
-		err := cmd.Wait()
-
-		if err != nil {
-			logEntry.SetText(logEntry.Text + fmt.Sprintf("\n转码失败: %v\n", err))
-			dialog.ShowError(fmt.Errorf("转码失败: %v", err), mainWindow)
-		} else {
-			logEntry.SetText(logEntry.Text + "\n转码完成!\n")
-			dialog.ShowInformation("完成", "转码成功!", mainWindow)
-		}
 	})
 
 	// 布局
@@ -233,10 +284,10 @@ func CreateConvertTab() fyne.CanvasObject {
 	actionRow := container.NewHBox(startBtn)
 
 	logLabel := widget.NewLabel("转码日志:")
-	logContainer := container.NewBorder(
-		nil, nil, nil, nil,
-		logEntry,
-	)
+	// 使用固定高度的滚动容器
+	logScroll := container.NewScroll(logEntry)
+	logScroll.SetMinSize(fyne.NewSize(700, 300))
+	logContainer := logScroll
 
 	content := container.NewVBox(
 		optionsForm,

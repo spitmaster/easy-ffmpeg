@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	a := app.New()
+	a := app.NewWithID("com.easyffmpeg.app")
 
 	w := a.NewWindow("Easy FFmpeg")
 	ui.SetMainWindow(w)

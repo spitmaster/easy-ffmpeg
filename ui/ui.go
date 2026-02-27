@@ -16,6 +16,15 @@ var mainWindow fyne.Window
 
 func SetMainWindow(w fyne.Window) {
 	mainWindow = w
+
+	// 窗口关闭时终止ffmpeg进程
+	w.SetOnClosed(func() {
+		cmdMutex.Lock()
+		if currentCmd != nil && currentCmd.Process != nil {
+			currentCmd.Process.Kill()
+		}
+		cmdMutex.Unlock()
+	})
 }
 
 func GetTheme() fyne.Theme {
