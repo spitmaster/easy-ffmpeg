@@ -82,3 +82,8 @@ func GetFFmpegBinaryInfo() (string, error) {
 	// 降级到系统FFmpeg
 	return "使用系统FFmpeg", nil
 }
+
+// GetEmbeddedFFmpegCmd 获取嵌入的FFmpeg命令对象
+func GetEmbeddedFFmpegCmd() (*exec.Cmd, error) {
+	return embedded.Command()
+}

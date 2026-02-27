@@ -12,6 +12,12 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+var mainWindow fyne.Window
+
+func SetMainWindow(w fyne.Window) {
+	mainWindow = w
+}
+
 func GetTheme() fyne.Theme {
 	return theme.DefaultTheme()
 }
@@ -44,7 +50,7 @@ func CreateMainUI() fyne.CanvasObject {
 	}
 
 	tabContainer := container.NewAppTabs(
-		container.NewTabItem("视频转换", widget.NewLabel("视频转换功能 - coming soon...")),
+		container.NewTabItem("视频转换", CreateConvertTab()),
 		container.NewTabItem("视频裁剪", widget.NewLabel("视频裁剪功能 - coming soon...")),
 		container.NewTabItem("音频处理", widget.NewLabel("音频处理功能 - coming soon...")),
 		container.NewTabItem("媒体信息", widget.NewLabel("媒体信息功能 - coming soon...")),
