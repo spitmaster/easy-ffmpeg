@@ -13,6 +13,6 @@ func main() {
 	w := a.NewWindow("Easy FFmpeg")
 	ui.SetMainWindow(w)
 	w.SetContent(ui.CreateMainUI())
-	w.Resize(fyne.NewSize(900, 600))
+	w.Resize(fyne.NewSize(1170, 600))
 	w.ShowAndRun()
 }
