@@ -4,216 +4,15 @@ import (
 	"bufio"
 	"easy-ffmpeg/service"
 	"fmt"
-	"image/color"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
-
-// ratioLayout 自定义布局,实现比例控制
-type ratioLayout struct {
-	ratios []int
-}
-
-func (l *ratioLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	if len(objects) == 0 || len(l.ratios) == 0 {
-		return
-	}
-
-	// 计算总比例
-	totalRatio := 0
-	for i := 0; i < len(objects) && i < len(l.ratios); i++ {
-		totalRatio += l.ratios[i]
-	}
-
-	// 按比例分配宽度
-	x := float32(0)
-	for i := 0; i < len(objects) && i < len(l.ratios); i++ {
-		width := float32(size.Width) * float32(l.ratios[i]) / float32(totalRatio)
-		objects[i].Move(fyne.NewPos(x, 0))
-		objects[i].Resize(fyne.NewSize(width, size.Height))
-		x += width
-	}
-}
-
-func (l *ratioLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	if len(objects) == 0 {
-		return fyne.NewSize(100, 100)
-	}
-	totalWidth := float32(0)
-	maxHeight := float32(0)
-	for _, obj := range objects {
-		min := obj.MinSize()
-		totalWidth += min.Width
-		if min.Height > maxHeight {
-			maxHeight = min.Height
-		}
-	}
-	return fyne.NewSize(totalWidth, maxHeight)
-}
-
-// GreenButton 绿色按钮
-type GreenButton struct {
-	widget.BaseWidget
-	btnText    string
-	onTapped   func()
-	background *canvas.Rectangle
-	text       *canvas.Text
-}
-
-func NewGreenButton(text string, tapped func()) *GreenButton {
-	btn := &GreenButton{}
-	btn.ExtendBaseWidget(btn)
-	btn.btnText = text
-	btn.onTapped = tapped
-	btn.background = canvas.NewRectangle(color.RGBA{R: 46, G: 204, B: 113, A: 255})
-	btn.background.CornerRadius = theme.InputRadiusSize()
-	btn.text = canvas.NewText(text, color.White)
-	btn.text.TextSize = theme.TextSize()
-	btn.text.TextStyle = fyne.TextStyle{Bold: true}
-	return btn
-}
-
-func (b *GreenButton) Tapped(*fyne.PointEvent) {
-	if b.onTapped != nil {
-		b.onTapped()
-	}
-}
-
-func (b *GreenButton) TappedSecondary(*fyne.PointEvent) {}
-
-func (b *GreenButton) CreateRenderer() fyne.WidgetRenderer {
-	return &greenButtonRenderer{button: b}
-}
-
-type greenButtonRenderer struct {
-	button *GreenButton
-}
-
-func (r *greenButtonRenderer) Layout(size fyne.Size) {
-	r.button.background.Resize(size)
-	r.button.text.Move(fyne.NewPos(size.Width/2-r.button.text.MinSize().Width/2,
-		size.Height/2-r.button.text.MinSize().Height/2))
-}
-
-func (r *greenButtonRenderer) MinSize() fyne.Size {
-	textSize := r.button.text.MinSize()
-	return fyne.NewSize(textSize.Width+40, textSize.Height+20)
-}
-
-func (r *greenButtonRenderer) Refresh() {
-	r.button.background.Refresh()
-	r.button.text.Refresh()
-}
-
-func (r *greenButtonRenderer) Objects() []fyne.CanvasObject {
-	return []fyne.CanvasObject{r.button.background, r.button.text}
-}
-
-func (r *greenButtonRenderer) Destroy() {}
-
-// 当前运行的ffmpeg进程
-var currentCmd *exec.Cmd
-var cmdMutex sync.Mutex
-
-// ReadOnlyEntry 只读但可选中可复制的Entry
-type ReadOnlyEntry struct {
-	widget.Entry
-}
-
-func (e *ReadOnlyEntry) TypedRune(r rune) {
-	// 禁止输入字符
-}
-
-func (e *ReadOnlyEntry) TypedShortcut(shortcut fyne.Shortcut) {
-	// 允许复制等快捷键
-	switch shortcut.(type) {
-	case *fyne.ShortcutCopy, *fyne.ShortcutSelectAll:
-		e.Entry.TypedShortcut(shortcut)
-	}
-}
-
-// logLayout 自定义布局，让日志区域有固定高度但宽度自适应
-type logLayout struct {
-}
-
-func (l *logLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	if len(objects) == 0 {
-		return
-	}
-	// 让子对象占据全部宽度，固定高度300
-	objects[0].Move(fyne.NewPos(0, 0))
-	objects[0].Resize(fyne.NewSize(size.Width, 300))
-}
-
-func (l *logLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	if len(objects) == 0 {
-		return fyne.NewSize(100, 300)
-	}
-	min := objects[0].MinSize()
-	return fyne.NewSize(min.Width, 300)
-}
-
-// 获取保存的输出目录
-func getSavedOutputDir() string {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	configPath := filepath.Join(configDir, "easy-ffmpeg", "output_dir.txt")
-	if data, err := os.ReadFile(configPath); err == nil {
-		return strings.TrimSpace(string(data))
-	}
-	return ""
-}
-
-// 保存输出目录
-func saveOutputDir(dir string) error {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return err
-	}
-	configPath := filepath.Join(configDir, "easy-ffmpeg", "output_dir.txt")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, []byte(dir), 0644)
-}
-
-// 获取保存的输入文件目录
-func getSavedInputDir() string {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	configPath := filepath.Join(configDir, "easy-ffmpeg", "input_dir.txt")
-	if data, err := os.ReadFile(configPath); err == nil {
-		return strings.TrimSpace(string(data))
-	}
-	return ""
-}
-
-// 保存输入文件目录
-func saveInputDir(dir string) error {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return err
-	}
-	configPath := filepath.Join(configDir, "easy-ffmpeg", "input_dir.txt")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, []byte(dir), 0644)
-}
 
 // CreateConvertTab 创建视频转换标签页
 func CreateConvertTab() fyne.CanvasObject {
@@ -230,7 +29,7 @@ func CreateConvertTab() fyne.CanvasObject {
 	outputDirEntry.SetPlaceHolder("选择输出目录...")
 
 	// 加载保存的输出目录
-	if savedDir := getSavedOutputDir(); savedDir != "" {
+	if savedDir := GetSavedOutputDir(); savedDir != "" {
 		outputDirEntry.SetText(savedDir)
 	}
 
@@ -243,7 +42,7 @@ func CreateConvertTab() fyne.CanvasObject {
 				// 保存输入文件目录
 				inputPath := reader.URI().Path()
 				inputDir := filepath.Dir(inputPath)
-				saveInputDir(inputDir)
+				SaveInputDir(inputDir)
 
 				// 自动设置输出文件名
 				ext := filepath.Ext(inputPath)
@@ -260,11 +59,10 @@ func CreateConvertTab() fyne.CanvasObject {
 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err == nil && uri != nil {
 				outputDirEntry.SetText(uri.Path())
-				saveOutputDir(uri.Path())
+				SaveOutputDir(uri.Path())
 			}
 		}, mainWindow)
 	})
-
 
 	// 输出行: 按钮1份,输入框2份,输出文件名1份
 	outputRow := container.New(&ratioLayout{ratios: []int{1, 2, 1}}, outputDirBtn, outputDirEntry, outputEntry)
@@ -324,8 +122,43 @@ func CreateConvertTab() fyne.CanvasObject {
 	}
 
 	// 开始按钮（先声明变量）
-	var startBtn *widget.Button
 	var progressDialog *dialog.CustomDialog
+
+	// 构建FFmpeg命令的辅助函数
+	buildFFmpegArgs := func(inputPath, outputDir, outputName, encoder, audioEncoder, format string) []string {
+		outputPath := filepath.Join(outputDir, outputName+"."+format)
+		args := []string{"-i", inputPath}
+
+		var codec string
+		if strings.HasPrefix(encoder, "copy") {
+			codec = "copy"
+		} else {
+			codec = strings.Split(encoder, " ")[0]
+			// 修正编码器名称
+			if codec == "h264" {
+				codec = "libx264"
+			} else if codec == "h265" {
+				codec = "libx265"
+			}
+		}
+
+		// 解析音频编码器
+		var audioCodec string
+		if strings.HasPrefix(audioEncoder, "copy") {
+			audioCodec = "copy"
+		} else {
+			audioCodec = strings.Split(audioEncoder, " ")[0]
+		}
+
+		if codec != "copy" {
+			args = append(args, "-c:v", codec, "-c:a", audioCodec)
+		} else {
+			args = append(args, "-c", "copy")
+		}
+
+		args = append(args, outputPath)
+		return args
+	}
 
 	// 开始按钮回调函数
 	startBtnCallback := func() {
@@ -364,37 +197,7 @@ func CreateConvertTab() fyne.CanvasObject {
 		outputPath := filepath.Join(outputDir, outputName+"."+format)
 
 		// 构建FFmpeg命令
-		args := []string{"-i", inputPath}
-
-		// 解析编码器
-		var codec string
-		if strings.HasPrefix(encoder, "copy") {
-			codec = "copy"
-		} else {
-			codec = strings.Split(encoder, " ")[0]
-			// 修正编码器名称
-			if codec == "h264" {
-				codec = "libx264"
-			} else if codec == "h265" {
-				codec = "libx265"
-			}
-		}
-
-		// 解析音频编码器
-		var audioCodec string
-		if strings.HasPrefix(audioEncoder, "copy") {
-			audioCodec = "copy"
-		} else {
-			audioCodec = strings.Split(audioEncoder, " ")[0]
-		}
-
-		if codec != "copy" {
-			args = append(args, "-c:v", codec, "-c:a", audioCodec)
-		} else {
-			args = append(args, "-c", "copy")
-		}
-
-		args = append(args, outputPath)
+		args := buildFFmpegArgs(inputPath, outputDir, outputName, encoder, audioEncoder, format)
 
 		// 清空日志
 		logEntry.SetText("")
@@ -402,7 +205,7 @@ func CreateConvertTab() fyne.CanvasObject {
 		// 执行转码
 		updateLog(fmt.Sprintf("开始转码: %s", inputPath))
 		updateLog(fmt.Sprintf("输出: %s", outputPath))
-		updateLog(fmt.Sprintf("编码器: %s", codec))
+		updateLog(fmt.Sprintf("编码器: %s", encoder))
 
 		cmd := exec.Command("ffmpeg", args...)
 		if embeddedCmd, err := service.GetEmbeddedFFmpegCmd(); err == nil {
@@ -518,11 +321,6 @@ func CreateConvertTab() fyne.CanvasObject {
 		}()
 	}
 
-	// 创建按钮并关联回调 - 设置为绿色并放大
-	startBtn = widget.NewButton("开始转码", startBtnCallback)
-	startBtn.Importance = widget.HighImportance // 绿色按钮并放大
-	startBtn.Refresh()
-
 	// 创建绿色按钮
 	greenBtn := NewGreenButton("开始转码", startBtnCallback)
 
@@ -543,36 +341,7 @@ func CreateConvertTab() fyne.CanvasObject {
 		format := formatSelect.Selected
 
 		if inputPath != "" && outputDir != "" && outputName != "" && encoder != "" && format != "" {
-			outputPath := filepath.Join(outputDir, outputName+"."+format)
-			args := []string{"-i", inputPath}
-
-			var codec string
-			if strings.HasPrefix(encoder, "copy") {
-				codec = "copy"
-			} else {
-				codec = strings.Split(encoder, " ")[0]
-				if codec == "h264" {
-					codec = "libx264"
-				} else if codec == "h265" {
-					codec = "libx265"
-				}
-			}
-
-			// 解析音频编码器
-			var audioCodec string
-			if strings.HasPrefix(audioEncoder, "copy") {
-				audioCodec = "copy"
-			} else {
-				audioCodec = strings.Split(audioEncoder, " ")[0]
-			}
-
-			if codec != "copy" {
-				args = append(args, "-c:v", codec)
-				args = append(args, "-c:a", audioCodec)
-			} else {
-				args = append(args, "-c", "copy")
-			}
-			args = append(args, outputPath)
+			args := buildFFmpegArgs(inputPath, outputDir, outputName, encoder, audioEncoder, format)
 
 			cmdStr := fmt.Sprintf("ffmpeg %s", strings.Join(args, " "))
 			commandEntry.SetText(cmdStr)
@@ -616,4 +385,13 @@ func CreateConvertTab() fyne.CanvasObject {
 
 	// 添加外边距
 	return container.NewPadded(content)
+}
+
+// KillCurrentProcess 终止当前运行的ffmpeg进程
+func KillCurrentProcess() {
+	cmdMutex.Lock()
+	if currentCmd != nil && currentCmd.Process != nil {
+		currentCmd.Process.Kill()
+	}
+	cmdMutex.Unlock()
 }
