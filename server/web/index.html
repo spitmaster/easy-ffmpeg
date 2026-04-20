@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Easy FFmpeg</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎬</span>
+      <span class="title">Easy FFmpeg</span>
+    </div>
+    <div class="topbar-right">
+      <span id="ffmpegStatus" class="status-chip">检测中...</span>
+      <button id="quitBtn" class="btn btn-ghost" title="退出程序">退出</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="convert">视频转换</button>
+    <button class="tab" data-tab="trim" disabled>视频裁剪</button>
+    <button class="tab" data-tab="audio" disabled>音频处理</button>
+    <button class="tab" data-tab="info" disabled>媒体信息</button>
+    <button class="tab" data-tab="settings" disabled>设置</button>
+  </nav>
+
+  <main>
+    <section class="panel" id="panel-convert">
+      <div class="field">
+        <label>输入文件</label>
+        <div class="row">
+          <button class="btn" id="pickInputBtn">选择文件</button>
+          <input id="inputPath" type="text" placeholder="选择或粘贴输入视频路径..." />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>输出目录 / 文件名</label>
+        <div class="row">
+          <button class="btn" id="pickOutputDirBtn">选择目录</button>
+          <input id="outputDir" type="text" placeholder="输出目录..." style="flex:2" />
+          <button class="btn btn-icon" id="openOutputDirBtn" title="在资源管理器中打开输出目录" disabled>📂</button>
+          <input id="outputName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>编码器 / 格式</label>
+        <div class="row">
+          <select id="videoEncoder">
+            <option value="h264">h264 (H.264/AVC)</option>
+            <option value="h265">h265 (H.265/HEVC)</option>
+            <option value="vp9">vp9 (VP9)</option>
+            <option value="av1">av1 (AV1)</option>
+            <option value="mpeg4">mpeg4 (MPEG-4)</option>
+            <option value="copy">copy (快速拷贝)</option>
+          </select>
+          <select id="audioEncoder">
+            <option value="aac">aac (AAC)</option>
+            <option value="mp3">mp3 (MP3)</option>
+            <option value="libopus">libopus (Opus)</option>
+            <option value="libvorbis">libvorbis (Vorbis)</option>
+            <option value="copy">copy (拷贝)</option>
+          </select>
+          <select id="format">
+            <option value="mp4">mp4</option>
+            <option value="mkv">mkv</option>
+            <option value="avi">avi</option>
+            <option value="mov">mov</option>
+            <option value="flv">flv</option>
+            <option value="webm">webm</option>
+            <option value="m3u8">m3u8</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>命令预览</label>
+        <pre id="commandPreview" class="command-preview">ffmpeg ...</pre>
+      </div>
+
+      <div class="action-row">
+        <button id="startBtn" class="btn btn-primary">开始转码</button>
+        <button id="cancelBtn" class="btn btn-danger" disabled>取消</button>
+        <span id="jobState" class="muted">空闲</span>
+      </div>
+
+      <div class="field">
+        <label>转码日志</label>
+        <div id="log" class="log"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- File/Folder picker modal -->
+  <div class="modal-backdrop hidden" id="pickerBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="pickerTitle">选择文件</h3>
+        <button class="btn btn-ghost" id="pickerClose">×</button>
+      </div>
+      <div class="modal-breadcrumb">
+        <select id="pickerDrive" class="hidden"></select>
+        <input id="pickerPath" type="text" spellcheck="false" />
+        <button class="btn btn-ghost" id="pickerUp" title="上一级">↑</button>
+      </div>
+      <div class="modal-body">
+        <ul id="pickerList" class="picker-list"></ul>
+      </div>
+      <div class="modal-footer">
+        <span id="pickerHint" class="muted"></span>
+        <div class="spacer"></div>
+        <button class="btn btn-ghost" id="pickerCancel">取消</button>
+        <button class="btn btn-primary" id="pickerConfirm">选择此目录</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- First-run extraction overlay -->
+  <div class="loading-backdrop hidden" id="loadingBackdrop">
+    <div class="loading-card">
+      <div class="loading-title">正在准备 FFmpeg</div>
+      <div class="loading-hint" id="loadingHint">首次启动需要解压内嵌的 FFmpeg 组件，请稍候…</div>
+      <div class="progress">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="progressPercent">0%</span>
+        <span id="progressFile" class="muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

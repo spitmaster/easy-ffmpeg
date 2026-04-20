@@ -4,86 +4,70 @@ import (
 	"easy-ffmpeg/internal/embedded"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
-// CheckFFmpeg 检查FFmpeg是否可用
-// 优先使用嵌入的FFmpeg，如果不可用则尝试系统FFmpeg
+// GetFFmpegPath returns the ffmpeg binary path.
+// Prefers embedded, falls back to "ffmpeg" on system PATH.
+func GetFFmpegPath() string {
+	if path, err := embedded.GetFFmpegBinary(); err == nil {
+		return path
+	}
+	return "ffmpeg"
+}
+
+// Prepare extracts the embedded ffmpeg archive if needed.
+// Call once at startup so the first API request doesn't block on decompression.
+func Prepare() error {
+	_, err := embedded.GetFFmpegBinary()
+	return err
+}
+
+// GetFFmpegDir returns the directory containing the ffmpeg binary.
+// Prefers embedded (cache dir), falls back to the directory of ffmpeg on PATH.
+func GetFFmpegDir() (string, error) {
+	if path, err := embedded.GetFFmpegBinary(); err == nil {
+		return filepath.Dir(path), nil
+	}
+	if path, err := exec.LookPath("ffmpeg"); err == nil {
+		return filepath.Dir(path), nil
+	}
+	return "", fmt.Errorf("ffmpeg not found")
+}
+
+// GetFFprobePath returns the ffprobe binary path.
+func GetFFprobePath() string {
+	if path, err := embedded.GetFFprobeBinary(); err == nil {
+		return path
+	}
+	return "ffprobe"
+}
+
+// CheckFFmpeg returns whether any ffmpeg (embedded or system) is runnable.
 func CheckFFmpeg() bool {
 	if embedded.CheckEmbeddedFFmpeg() {
 		return true
 	}
-
-	// 降级到系统FFmpeg
-	cmd := exec.Command("ffmpeg", "-version")
-	err := cmd.Run()
-	return err == nil
+	return exec.Command("ffmpeg", "-version").Run() == nil
 }
 
-// RunFFmpeg 执行FFmpeg命令
-// 优先使用嵌入的FFmpeg，如果不可用则尝试系统FFmpeg
-func RunFFmpeg(args []string) (string, error) {
-	// 尝试使用嵌入的FFmpeg
-	if cmd, err := embedded.Command(args...); err == nil {
-		output, err := cmd.CombinedOutput()
-		return string(output), err
-	}
-
-	// 降级到系统FFmpeg
-	cmd := exec.Command("ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
-	return string(output), err
-}
-
-// GetFFmpegVersion 获取FFmpeg版本信息
-// 优先使用嵌入的FFmpeg，如果不可用则尝试系统FFmpeg
+// GetFFmpegVersion returns the first line of ffmpeg -version output, or empty.
 func GetFFmpegVersion() string {
-	// 尝试使用嵌入的FFmpeg
-	version := embedded.GetEmbeddedFFmpegVersion()
-	if version != "" {
-		return version
-	}
-
-	// 降级到系统FFmpeg
-	cmd := exec.Command("ffmpeg", "-version")
-	output, err := cmd.Output()
+	path := GetFFmpegPath()
+	out, err := exec.Command(path, "-version").Output()
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(string(output), "\n")
+	lines := strings.SplitN(string(out), "\n", 2)
 	if len(lines) > 0 {
-		return lines[0]
+		return strings.TrimSpace(lines[0])
 	}
 	return ""
 }
 
-// RunFFprobe 执行FFprobe命令
-func RunFFprobe(args []string) (string, error) {
-	// 尝试使用嵌入的FFprobe
-	if cmd, err := embedded.FFprobeCommand(args...); err == nil {
-		output, err := cmd.CombinedOutput()
-		return string(output), err
-	}
-
-	// 降级到系统FFprobe
-	cmd := exec.Command("ffprobe", args...)
-	output, err := cmd.CombinedOutput()
-	return string(output), err
-}
-
-// GetFFmpegBinaryInfo 获取FFmpeg二进制信息
-func GetFFmpegBinaryInfo() (string, error) {
-	// 尝试使用嵌入的FFmpeg
-	binaryPath, err := embedded.GetFFmpegBinary()
-	if err == nil {
-		return fmt.Sprintf("使用嵌入的FFmpeg: %s", binaryPath), nil
-	}
-
-	// 降级到系统FFmpeg
-	return "使用系统FFmpeg", nil
-}
-
-// GetEmbeddedFFmpegCmd 获取嵌入的FFmpeg命令对象
-func GetEmbeddedFFmpegCmd() (*exec.Cmd, error) {
-	return embedded.Command()
+// IsEmbedded reports whether the embedded binary is being used.
+func IsEmbedded() bool {
+	_, err := embedded.GetFFmpegBinary()
+	return err == nil
 }
