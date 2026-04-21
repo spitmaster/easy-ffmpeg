@@ -112,6 +112,13 @@ func (m *Manager) pump(cmd *exec.Cmd, stderr io.ReadCloser) {
 			lastEmit = time.Now()
 			continue
 		}
+		// Flush any pending throttled progress line before a non-progress
+		// line, otherwise fast transcodes (e.g. speed=45x) lose the final
+		// "frame= ..." summary to the next summary line.
+		if pendingProgress != "" {
+			m.broadcast(Event{Type: "log", Line: pendingProgress})
+			pendingProgress = ""
+		}
 		m.broadcast(Event{Type: "log", Line: line})
 		lastEmit = time.Now()
 	}

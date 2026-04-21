@@ -84,9 +84,19 @@ func (s *Server) handleFsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// If caller passed a file path (e.g. previously-picked input file),
+	// fall back to listing its parent directory instead of erroring.
 	if !info.IsDir() {
-		writeErr(w, http.StatusBadRequest, "path is not a directory")
-		return
+		path = filepath.Dir(path)
+		info, err = os.Stat(path)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !info.IsDir() {
+			writeErr(w, http.StatusBadRequest, "path is not a directory")
+			return
+		}
 	}
 
 	dirEntries, err := os.ReadDir(path)
@@ -217,12 +227,13 @@ func (s *Server) handleConfigDirs(w http.ResponseWriter, r *http.Request) {
 // ---------------- convert ----------------
 
 type convertRequest struct {
-	InputPath     string `json:"inputPath"`
-	OutputDir     string `json:"outputDir"`
-	OutputName    string `json:"outputName"`
-	VideoEncoder  string `json:"videoEncoder"`
-	AudioEncoder  string `json:"audioEncoder"`
-	Format        string `json:"format"`
+	InputPath    string `json:"inputPath"`
+	OutputDir    string `json:"outputDir"`
+	OutputName   string `json:"outputName"`
+	VideoEncoder string `json:"videoEncoder"`
+	AudioEncoder string `json:"audioEncoder"`
+	Format       string `json:"format"`
+	Overwrite    bool   `json:"overwrite"`
 }
 
 func buildFFmpegArgs(req convertRequest) []string {
@@ -278,6 +289,19 @@ func (s *Server) handleConvertStart(w http.ResponseWriter, r *http.Request) {
 	if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
 		writeErr(w, http.StatusBadRequest, "cannot create output dir: "+err.Error())
 		return
+	}
+
+	// 目标文件已存在且未授权覆盖 → 返回 409 让前端弹确认框
+	outputPath := filepath.Join(req.OutputDir, req.OutputName+"."+req.Format)
+	if !req.Overwrite {
+		if _, err := os.Stat(outputPath); err == nil {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":    "file exists",
+				"existing": true,
+				"path":     filepath.ToSlash(outputPath),
+			})
+			return
+		}
 	}
 
 	args := buildFFmpegArgs(req)

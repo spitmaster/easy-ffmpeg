@@ -325,7 +325,7 @@ function appendLog(text, cls) {
     const last = logEl.lastElementChild;
     if (last && last.classList.contains("progress")) {
       last.textContent = text;
-      logEl.scrollTop = logEl.scrollHeight;
+      requestAnimationFrame(() => { logEl.scrollTop = logEl.scrollHeight; });
       return;
     }
     const line = document.createElement("span");
@@ -338,8 +338,45 @@ function appendLog(text, cls) {
     line.textContent = text;
     logEl.appendChild(line);
   }
-  logEl.scrollTop = logEl.scrollHeight;
+  requestAnimationFrame(() => { logEl.scrollTop = logEl.scrollHeight; });
 }
+
+// ---------------- finish bar ----------------
+
+const finishBar = $("finishBar");
+const finishText = $("finishText");
+const finishRevealBtn = $("finishRevealBtn");
+let lastOutputPath = null;
+
+function showFinishBar(kind, text, revealPath) {
+  finishBar.classList.remove("hidden", "success", "error", "cancelled");
+  finishBar.classList.add(kind);
+  finishText.textContent = text;
+  if (revealPath) {
+    lastOutputPath = revealPath;
+    finishRevealBtn.classList.remove("hidden");
+  } else {
+    finishRevealBtn.classList.add("hidden");
+  }
+}
+
+function hideFinishBar() {
+  finishBar.classList.add("hidden");
+  finishRevealBtn.classList.add("hidden");
+}
+
+finishRevealBtn.addEventListener("click", async () => {
+  if (!lastOutputPath) return;
+  try {
+    await fetchJSON("/api/fs/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: lastOutputPath }),
+    });
+  } catch (e) {
+    alert("打开失败: " + e.message);
+  }
+});
 
 function setRunning(running) {
   startBtn.disabled  = running;
@@ -364,15 +401,15 @@ function connectStream() {
         break;
       case "done":
         setRunning(false);
-        appendLog("✓ 转码完成", "success");
+        showFinishBar("success", "✓ 转码完成", lastOutputPath);
         break;
       case "error":
         setRunning(false);
-        appendLog("✗ 转码失败: " + (ev.message || ""), "error");
+        showFinishBar("error", "✗ 转码失败: " + (ev.message || ""), null);
         break;
       case "cancelled":
         setRunning(false);
-        appendLog("! 转码已取消", "cancelled");
+        showFinishBar("cancelled", "! 转码已取消", null);
         break;
     }
   };
@@ -381,22 +418,38 @@ function connectStream() {
   };
 }
 
+async function startConvert(form, overwrite) {
+  const res = await fetch("/api/convert/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...form, overwrite }),
+  });
+  const data = await res.json().catch(() => ({}));
+
+  // 409: 目标文件已存在，弹确认
+  if (res.status === 409 && data.existing) {
+    const ok = confirm(`目标文件已存在，是否覆盖？\n\n${data.path}`);
+    if (!ok) return; // 用户取消
+    return startConvert(form, true);
+  }
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+  appendLog("> " + data.command, "info");
+  setRunning(true);
+}
+
 startBtn.addEventListener("click", async () => {
   const f = readForm();
-  if (!f.inputPath)   return alert("请选择输入文件");
-  if (!f.outputDir)   return alert("请选择输出目录");
-  if (!f.outputName)  return alert("请输入输出文件名");
+  if (!f.inputPath)  return alert("请选择输入文件");
+  if (!f.outputDir)  return alert("请选择输出目录");
+  if (!f.outputName) return alert("请输入输出文件名");
   logEl.innerHTML = "";
+  hideFinishBar();
+  lastOutputPath = joinPath(f.outputDir, `${f.outputName}.${f.format}`);
   try {
-    const res = await fetchJSON("/api/convert/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(f),
-    });
-    appendLog("> " + res.command, "info");
-    setRunning(true);
+    await startConvert(f, false);
   } catch (e) {
-    appendLog("✗ 启动失败: " + e.message, "error");
+    showFinishBar("error", "✗ 启动失败: " + e.message, null);
   }
 });
 

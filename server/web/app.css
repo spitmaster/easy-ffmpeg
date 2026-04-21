@@ -22,13 +22,19 @@
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
+  height: 100vh;
+  overflow: hidden; /* 不允许整页滚动，下方布局会自适应视口 */
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
                "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-size: 14px;
   line-height: 1.5;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---------------- topbar ---------------- */
@@ -81,11 +87,32 @@ html, body {
 
 /* ---------------- main ---------------- */
 main {
-  padding: 24px 20px;
+  padding: 20px;
   max-width: 1200px;
+  width: 100%;
   margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;       /* 不让内容溢出到 body 造成整页滚动 */
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
 }
-.panel { display: flex; flex-direction: column; gap: 18px; }
+.panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;       /* 同上，拦截子项溢出 */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 最后一个 .field（日志所在）填满剩余垂直空间 */
+.panel > .field:last-child {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 
 .field { display: flex; flex-direction: column; gap: 8px; }
 .field > label {
@@ -184,19 +211,34 @@ select {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
-  height: 320px;
+  flex: 1;
+  min-height: 0;           /* 允许极小视口时被压到最小 */
   overflow: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;
   color: #d4d4d4;
   white-space: pre;
 }
-.log .log-line           { display: block; }
-.log .log-line.success   { color: var(--accent); }
-.log .log-line.error     { color: var(--danger); }
+.log .log-line           { display: block; line-height: 1.5; min-height: 1em; }
 .log .log-line.info      { color: var(--info); }
-.log .log-line.cancelled { color: var(--warning); }
 .log .log-line.progress  { color: var(--warning); }
+
+/* 转码结束状态条（在日志框下方，不再挤在日志里） */
+.finish-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-weight: 600;
+  flex-shrink: 0;          /* 状态条不被 flex 压缩，保证完整可见 */
+}
+.finish-bar.success   { border-color: var(--accent);  color: var(--accent);  background: rgba(16, 185, 129, 0.08); }
+.finish-bar.error     { border-color: var(--danger);  color: var(--danger);  background: rgba(239, 68, 68, 0.08); }
+.finish-bar.cancelled { border-color: var(--warning); color: var(--warning); background: rgba(245, 158, 11, 0.08); }
+.finish-bar .spacer   { flex: 1; }
 
 /* ---------------- modal ---------------- */
 .modal-backdrop {
@@ -308,7 +350,7 @@ select {
   font-size: 13px;
   margin-bottom: 20px;
 }
-.progress {
+.loading-card .progress {
   width: 100%;
   height: 8px;
   background: var(--surface-2);
@@ -316,14 +358,14 @@ select {
   overflow: hidden;
   margin-bottom: 10px;
 }
-.progress-bar {
+.loading-card .progress-bar {
   height: 100%;
   width: 0%;
   background: linear-gradient(90deg, var(--accent), var(--info));
   border-radius: 4px;
   transition: width 0.25s ease-out;
 }
-.progress-meta {
+.loading-card .progress-meta {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -331,4 +373,4 @@ select {
   color: var(--muted);
   font-family: var(--font-mono);
 }
-.progress-meta #progressPercent { color: var(--accent); font-weight: 600; }
+.loading-card .progress-meta #progressPercent { color: var(--accent); font-weight: 600; }
