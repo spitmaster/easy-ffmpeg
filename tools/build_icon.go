@@ -16,8 +16,24 @@ import (
 	"os"
 )
 
-// Final embedded sizes. Windows picks the appropriate one per context.
-var sizes = []int{16, 32, 48, 64, 128, 256}
+// All sizes we render (union of Windows ICO + macOS ICNS needs).
+var sizes = []int{16, 32, 48, 64, 128, 256, 512}
+
+// Windows ICO takes this subset.
+var icoSizes = []int{16, 32, 48, 64, 128, 256}
+
+// macOS ICNS chunk types for specific pixel sizes (modern PNG payload).
+var icnsChunks = []struct {
+	size int
+	typ  string
+}{
+	{16, "icp4"},
+	{32, "icp5"},
+	{64, "ic12"}, // 32x32@2x
+	{128, "ic07"},
+	{256, "ic08"},
+	{512, "ic09"},
+}
 
 // Palette — matches the progress bar gradient (emerald → blue).
 var (
@@ -27,20 +43,34 @@ var (
 )
 
 func main() {
-	pngs := make([][]byte, len(sizes))
-	for i, s := range sizes {
+	pngsBySize := make(map[int][]byte, len(sizes))
+	for _, s := range sizes {
 		img := renderIcon(s)
 		var buf bytes.Buffer
 		if err := png.Encode(&buf, img); err != nil {
 			panic(err)
 		}
-		pngs[i] = buf.Bytes()
+		pngsBySize[s] = buf.Bytes()
 	}
-	if err := os.WriteFile("cmd/icon.ico", packICO(pngs, sizes), 0644); err != nil {
+
+	// Write Windows .ico
+	icoPngs := make([][]byte, len(icoSizes))
+	for i, s := range icoSizes {
+		icoPngs[i] = pngsBySize[s]
+	}
+	if err := os.WriteFile("cmd/icon.ico", packICO(icoPngs, icoSizes), 0644); err != nil {
 		panic(err)
 	}
-	fmt.Printf("wrote cmd/icon.ico (%d sizes, %d bytes)\n",
-		len(sizes), totalLen(pngs)+6+16*len(pngs))
+	fmt.Printf("wrote cmd/icon.ico (%d sizes)\n", len(icoSizes))
+
+	// Write macOS .icns
+	if err := os.MkdirAll("assets", 0755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile("assets/icon.icns", packICNS(pngsBySize), 0644); err != nil {
+		panic(err)
+	}
+	fmt.Printf("wrote assets/icon.icns (%d sizes)\n", len(icnsChunks))
 }
 
 // Render the icon at the given size. 4× super-sampling + box filter downscale
@@ -194,4 +224,27 @@ func totalLen(bs [][]byte) int {
 		n += len(b)
 	}
 	return n
+}
+
+// packICNS writes a macOS icon file with PNG payloads.
+// Format: "icns" magic (4) + total size big-endian (4), then
+// repeated chunks of (type 4 + chunk-total-size big-endian 4 + data).
+func packICNS(pngsBySize map[int][]byte) []byte {
+	buf := new(bytes.Buffer)
+	buf.WriteString("icns")
+	binary.Write(buf, binary.BigEndian, uint32(0)) // total size placeholder
+
+	for _, c := range icnsChunks {
+		data, ok := pngsBySize[c.size]
+		if !ok {
+			continue
+		}
+		buf.WriteString(c.typ)
+		binary.Write(buf, binary.BigEndian, uint32(8+len(data))) // 8 = type + size header
+		buf.Write(data)
+	}
+
+	result := buf.Bytes()
+	binary.BigEndian.PutUint32(result[4:8], uint32(len(result)))
+	return result
 }

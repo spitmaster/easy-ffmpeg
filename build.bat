@@ -12,6 +12,10 @@ call :build darwin  arm64 easy-ffmpeg-macos-arm64    || goto :fail
 call :build darwin  amd64 easy-ffmpeg-macos-amd64    || goto :fail
 call :build linux   amd64 easy-ffmpeg-linux          || goto :fail
 
+echo ==^> Wrapping macOS binaries into .app bundles
+go run tools\build_macapp.go -bin dist\easy-ffmpeg-macos-arm64 -out "dist\Easy FFmpeg (arm64).app" || goto :fail
+go run tools\build_macapp.go -bin dist\easy-ffmpeg-macos-amd64 -out "dist\Easy FFmpeg (amd64).app" || goto :fail
+
 echo.
 echo ========================================
 echo   Build successful

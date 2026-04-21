@@ -18,6 +18,11 @@ build darwin  arm64 easy-ffmpeg-macos-arm64
 build darwin  amd64 easy-ffmpeg-macos-amd64
 build linux   amd64 easy-ffmpeg-linux
 
+# Wrap macOS binaries into .app bundles (icon + Info.plist)
+echo "==> Wrapping macOS binaries into .app bundles"
+go run tools/build_macapp.go -bin dist/easy-ffmpeg-macos-arm64 -out "dist/Easy FFmpeg (arm64).app"
+go run tools/build_macapp.go -bin dist/easy-ffmpeg-macos-amd64 -out "dist/Easy FFmpeg (amd64).app"
+
 echo
 echo "========================================"
 echo "  Build successful"
