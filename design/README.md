@@ -10,6 +10,7 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 | [architecture.md](architecture.md) | 架构设计：分层模型、模块依赖、数据流、启动时序 |
 | [module-design.md](module-design.md) | 模块设计：各包职责与关键函数 |
 | [feature-design.md](feature-design.md) | 功能设计：已实现/待实现功能的交互与实现 |
+| [audio-feature-design.md](audio-feature-design.md) | 音频处理功能专项设计：三种模式、API、命令构建规则 |
 | [ui-design.md](ui-design.md) | UI 设计：HTML/CSS/JS 结构、自定义样式、交互细节 |
 | [build-and-deploy.md](build-and-deploy.md) | 构建与部署：7z 嵌入机制、跨平台编译、首次启动解压 |
 | [roadmap.md](roadmap.md) | 路线图：功能迭代计划与技术债务 |
