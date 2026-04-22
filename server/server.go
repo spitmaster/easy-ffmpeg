@@ -65,6 +65,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/convert/start", s.handleConvertStart)
 	mux.HandleFunc("/api/convert/cancel", s.handleConvertCancel)
 	mux.HandleFunc("/api/convert/stream", s.handleConvertStream)
+	mux.HandleFunc("/api/audio/probe", s.handleAudioProbe)
+	mux.HandleFunc("/api/audio/start", s.handleAudioStart)
+	mux.HandleFunc("/api/audio/cancel", s.handleAudioCancel)
 	mux.HandleFunc("/api/quit", s.handleQuit)
 }
 

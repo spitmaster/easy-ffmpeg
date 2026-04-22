@@ -21,7 +21,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="convert">视频转换</button>
     <button class="tab" data-tab="trim" disabled>视频裁剪</button>
-    <button class="tab" data-tab="audio" disabled>音频处理</button>
+    <button class="tab" data-tab="audio">音频处理</button>
     <button class="tab" data-tab="info" disabled>媒体信息</button>
     <button class="tab" data-tab="settings" disabled>设置</button>
   </nav>
@@ -94,6 +94,241 @@
           <span id="finishText"></span>
           <div class="spacer"></div>
           <button id="finishRevealBtn" class="btn hidden">📂 打开文件夹</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="panel-audio">
+      <div class="segmented" id="audioModeSwitch" role="tablist">
+        <button class="seg active" data-mode="convert">格式转换</button>
+        <button class="seg" data-mode="extract">从视频提取</button>
+        <button class="seg" data-mode="merge">音频合并</button>
+      </div>
+
+      <!-- convert mode -->
+      <div class="mode-body" data-mode-body="convert">
+        <div class="field">
+          <label>输入音频</label>
+          <div class="row">
+            <button class="btn" id="audioConvertPickInput">选择文件</button>
+            <input id="audioConvertInput" type="text" placeholder="选择或粘贴输入音频路径..." />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出目录 / 文件名</label>
+          <div class="row">
+            <button class="btn" id="audioConvertPickOutDir">选择目录</button>
+            <input id="audioConvertOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+            <button class="btn btn-icon" id="audioConvertOpenOutDir" title="在资源管理器中打开输出目录" disabled>📂</button>
+            <input id="audioConvertOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>格式 / 编码器 / 码率</label>
+          <div class="row">
+            <select id="audioConvertFormat">
+              <option value="mp3">mp3</option>
+              <option value="m4a">m4a</option>
+              <option value="flac">flac</option>
+              <option value="wav">wav</option>
+              <option value="ogg">ogg</option>
+              <option value="opus">opus</option>
+            </select>
+            <select id="audioConvertCodec"></select>
+            <select id="audioConvertBitrate">
+              <option value="64">64 kbps</option>
+              <option value="96">96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="160">160 kbps</option>
+              <option value="192" selected>192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+              <option value="copy">保持原码率</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>采样率 / 声道</label>
+          <div class="row">
+            <select id="audioConvertSampleRate">
+              <option value="0">原始采样率</option>
+              <option value="48000">48000 Hz</option>
+              <option value="44100">44100 Hz</option>
+              <option value="22050">22050 Hz</option>
+              <option value="8000">8000 Hz</option>
+            </select>
+            <select id="audioConvertChannels">
+              <option value="0">原始声道</option>
+              <option value="2">立体声 (2)</option>
+              <option value="1">单声道 (1)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- extract mode -->
+      <div class="mode-body hidden" data-mode-body="extract">
+        <div class="field">
+          <label>输入视频</label>
+          <div class="row">
+            <button class="btn" id="audioExtractPickInput">选择文件</button>
+            <input id="audioExtractInput" type="text" placeholder="选择或粘贴视频路径..." />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>音轨</label>
+          <div class="row">
+            <select id="audioExtractStream" style="flex:2" disabled>
+              <option value="">（请选择视频文件）</option>
+            </select>
+            <span id="audioExtractStreamHint" class="muted" style="align-self:center;flex:1"></span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出方式</label>
+          <div class="radio-row">
+            <label><input type="radio" name="audioExtractMethod" value="copy" checked> 直接拷贝（无损、秒完成）</label>
+            <label><input type="radio" name="audioExtractMethod" value="transcode"> 转码为指定格式</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出目录 / 文件名</label>
+          <div class="row">
+            <button class="btn" id="audioExtractPickOutDir">选择目录</button>
+            <input id="audioExtractOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+            <button class="btn btn-icon" id="audioExtractOpenOutDir" title="在资源管理器中打开" disabled>📂</button>
+            <input id="audioExtractOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
+          </div>
+        </div>
+
+        <!-- copy-method info -->
+        <div class="extract-sub" data-extract-sub="copy">
+          <div class="muted" id="audioExtractCopyHint">选择视频后根据音轨编码自动选择输出容器</div>
+        </div>
+
+        <!-- transcode-method params -->
+        <div class="extract-sub hidden" data-extract-sub="transcode">
+          <div class="field">
+            <label>格式 / 编码器 / 码率</label>
+            <div class="row">
+              <select id="audioExtractFormat">
+                <option value="mp3">mp3</option>
+                <option value="m4a">m4a</option>
+                <option value="flac">flac</option>
+                <option value="wav">wav</option>
+                <option value="ogg">ogg</option>
+                <option value="opus">opus</option>
+              </select>
+              <select id="audioExtractCodec"></select>
+              <select id="audioExtractBitrate">
+                <option value="64">64 kbps</option>
+                <option value="96">96 kbps</option>
+                <option value="128">128 kbps</option>
+                <option value="160">160 kbps</option>
+                <option value="192" selected>192 kbps</option>
+                <option value="256">256 kbps</option>
+                <option value="320">320 kbps</option>
+                <option value="copy">保持原码率</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>采样率 / 声道</label>
+            <div class="row">
+              <select id="audioExtractSampleRate">
+                <option value="0">原始采样率</option>
+                <option value="48000">48000 Hz</option>
+                <option value="44100">44100 Hz</option>
+                <option value="22050">22050 Hz</option>
+                <option value="8000">8000 Hz</option>
+              </select>
+              <select id="audioExtractChannels">
+                <option value="0">原始声道</option>
+                <option value="2">立体声 (2)</option>
+                <option value="1">单声道 (1)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- merge mode -->
+      <div class="mode-body hidden" data-mode-body="merge">
+        <div class="field">
+          <label>输入文件（按顺序拼接）</label>
+          <ul class="merge-list" id="audioMergeList"></ul>
+          <div><button class="btn" id="audioMergeAddBtn">+ 添加文件</button></div>
+        </div>
+
+        <div class="field">
+          <label>合并策略</label>
+          <div class="radio-row">
+            <label><input type="radio" name="audioMergeStrategy" value="auto" checked> 自动判断</label>
+            <label><input type="radio" name="audioMergeStrategy" value="copy"> 快速拼接（编码一致）</label>
+            <label><input type="radio" name="audioMergeStrategy" value="reencode"> 重编码拼接</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出目录 / 文件名</label>
+          <div class="row">
+            <button class="btn" id="audioMergePickOutDir">选择目录</button>
+            <input id="audioMergeOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+            <button class="btn btn-icon" id="audioMergeOpenOutDir" title="在资源管理器中打开" disabled>📂</button>
+            <input id="audioMergeOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" value="merged" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>格式 / 编码器 / 码率（仅重编码分支用到；copy 分支仅用格式作后缀）</label>
+          <div class="row">
+            <select id="audioMergeFormat">
+              <option value="mp3">mp3</option>
+              <option value="m4a">m4a</option>
+              <option value="flac">flac</option>
+              <option value="wav">wav</option>
+              <option value="ogg">ogg</option>
+              <option value="opus">opus</option>
+            </select>
+            <select id="audioMergeCodec"></select>
+            <select id="audioMergeBitrate">
+              <option value="64">64 kbps</option>
+              <option value="96">96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="160">160 kbps</option>
+              <option value="192" selected>192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+              <option value="copy">保持原码率</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>命令预览</label>
+        <pre id="audioCommandPreview" class="command-preview">ffmpeg ...</pre>
+      </div>
+
+      <div class="action-row">
+        <button id="audioStartBtn" class="btn btn-primary">开始处理</button>
+        <button id="audioCancelBtn" class="btn btn-danger" disabled>取消</button>
+        <span id="audioJobState" class="muted">空闲</span>
+      </div>
+
+      <div class="field">
+        <label>处理日志</label>
+        <div id="audioLog" class="log"></div>
+        <div id="audioFinishBar" class="finish-bar hidden">
+          <span id="audioFinishText"></span>
+          <div class="spacer"></div>
+          <button id="audioFinishRevealBtn" class="btn hidden">📂 打开文件夹</button>
         </div>
       </div>
     </section>

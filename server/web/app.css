@@ -240,6 +240,83 @@ select {
 .finish-bar.cancelled { border-color: var(--warning); color: var(--warning); background: rgba(245, 158, 11, 0.08); }
 .finish-bar .spacer   { flex: 1; }
 
+/* ---------------- segmented (mode switch) ---------------- */
+.segmented {
+  display: inline-flex;
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  align-self: flex-start;
+  flex-shrink: 0;
+}
+.segmented .seg {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
+}
+.segmented .seg:hover:not(:disabled) { color: var(--text); }
+.segmented .seg.active               { background: var(--surface-2); color: var(--text); }
+.segmented .seg:disabled              { opacity: 0.4; cursor: not-allowed; }
+
+.mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.extract-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.radio-row { display: flex; gap: 20px; flex-wrap: wrap; padding: 4px 0; }
+.radio-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; color: var(--text); }
+.radio-row input[type="radio"] { accent-color: var(--accent); }
+
+/* ---------------- audio merge list ---------------- */
+.merge-list {
+  list-style: none;
+  margin: 0 0 8px 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  max-height: 220px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.merge-list:empty::before {
+  content: "尚未添加文件";
+  display: block;
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+.merge-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.merge-list li:last-child { border-bottom: none; }
+.merge-list .drag-handle { color: var(--muted); user-select: none; }
+.merge-list .idx         { color: var(--muted); font-size: 12px; min-width: 20px; text-align: right; }
+.merge-list .name        { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.merge-list .meta        { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.merge-list button       { padding: 4px 8px; font-size: 13px; }
+
 /* ---------------- modal ---------------- */
 .modal-backdrop {
   position: fixed;
