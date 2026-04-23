@@ -11,6 +11,7 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 | [module-design.md](module-design.md) | 模块设计：各包职责与关键函数 |
 | [feature-design.md](feature-design.md) | 功能设计：已实现/待实现功能的交互与实现 |
 | [audio-feature-design.md](audio-feature-design.md) | 音频处理功能专项设计：三种模式、API、命令构建规则 |
+| [trim-feature-design.md](trim-feature-design.md) | 视频裁剪功能专项设计：时间/空间/分辨率三组开关、API、命令构建规则 |
 | [ui-design.md](ui-design.md) | UI 设计：HTML/CSS/JS 结构、自定义样式、交互细节 |
 | [build-and-deploy.md](build-and-deploy.md) | 构建与部署：7z 嵌入机制、跨平台编译、首次启动解压 |
 | [roadmap.md](roadmap.md) | 路线图：功能迭代计划与技术债务 |
@@ -24,8 +25,13 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 
 ## 当前状态
 
-- **UI 技术**：本地 HTTP 服务 + 浏览器 Web 界面（纯 HTML/CSS/JS，零前端构建）
+- **UI 技术**：本地 HTTP 服务 + 浏览器 Web 界面（纯 HTML/CSS/JS，零前端构建；`app.js` 为模块化 IIFE 结构）
 - **FFmpeg 分发**：7z 压缩包嵌入 Go 二进制，首次启动解压到 `~/.easy-ffmpeg/bin-<hash>/`
 - **产物大小**：Windows 35MB · macOS 27MB · Linux 29MB（原始非压缩方案曾为 350MB+）
-- **已实现**：视频格式转换（含自定义编码器/容器、实时日志、取消、目录记忆）
-- **占位未实现**：视频裁剪、音频处理、媒体信息、设置
+- **已实现**：
+  - 视频转换（格式 / 编解码 / 容器）
+  - 视频裁剪（时间 / 空间 / 分辨率三组可组合；详见 [trim-feature-design.md](trim-feature-design.md)）
+  - 音频处理（格式转换 / 从视频提取 / 合并 三模式；详见 [audio-feature-design.md](audio-feature-design.md)）
+  - 全局：ffprobe 探测、SSE 日志、取消、首次解压进度、目录记忆、退出按钮
+- **占位未实现**：媒体信息、设置
+- **已覆盖测试**：`server/audio_args_test.go` + `server/trim_args_test.go`（表驱动，纯函数命令构建器）

@@ -68,6 +68,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/audio/probe", s.handleAudioProbe)
 	mux.HandleFunc("/api/audio/start", s.handleAudioStart)
 	mux.HandleFunc("/api/audio/cancel", s.handleAudioCancel)
+	mux.HandleFunc("/api/trim/probe", s.handleTrimProbe)
+	mux.HandleFunc("/api/trim/start", s.handleTrimStart)
+	mux.HandleFunc("/api/trim/cancel", s.handleTrimCancel)
 	mux.HandleFunc("/api/quit", s.handleQuit)
 }
 

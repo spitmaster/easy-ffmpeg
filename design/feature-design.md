@@ -5,7 +5,7 @@
 | Tab | 状态 | 说明 |
 |-----|------|------|
 | 视频转换 | ✅ 已实现 | 核心功能，格式 / 编解码转换 |
-| 视频裁剪 | 🚧 占位 | HTML 里 disabled，未实现 |
+| 视频裁剪 | ✅ 已实现 | 时间 / 空间 / 分辨率三组可组合（详见 [trim-feature-design.md](trim-feature-design.md)） |
 | 音频处理 | ✅ 已实现 | 三模式：格式转换 / 从视频提取 / 合并（详见 [audio-feature-design.md](audio-feature-design.md)） |
 | 媒体信息 | 🚧 占位 | 同上；已经嵌入 ffprobe 为未来做准备 |
 | 设置 | 🚧 占位 | 同上 |
@@ -229,9 +229,12 @@ ffmpeg version 8.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFm
 ## 8. 约束与规则
 
 - 所有功能都走 `service` 层调用 FFmpeg/FFprobe，HTTP handler 不直接 `os/exec`
-- 长耗时任务都遵循「goroutine + 非阻塞 broadcast + SSE 订阅 + fyne.Do 对等物（`fetch` + DOM 异步更新）」范式
+- 长耗时任务都遵循「goroutine + 非阻塞 broadcast + SSE 订阅 + `fetch` + DOM 异步更新」范式
+- 前端命令预览与实际执行用同一套构建逻辑（前端展示用、后端执行用各一份，两者对齐）
+- 纯函数命令构建器（`server/*_args.go`）必须保持无 I/O，便于表驱动测试
 - 新增 Tab 的入口：
-  1. `web/index.html` 的 `<nav class="tabs">` 加一个 button
-  2. `web/index.html` 的 main 区域加一个 `<section class="panel" id="panel-xxx">`
-  3. `web/app.js` 里加 tab 切换逻辑（目前还没实现，因为只有一个 tab）
-  4. 后端加对应 API endpoint
+  1. `web/index.html` 的 `<nav class="tabs">` 去掉对应 button 的 `disabled`
+  2. `web/index.html` 的 main 区域加一个 `<section class="panel hidden" id="panel-xxx">`
+  3. `web/app.js` 里新增 `XxxTab` IIFE，并在 init 序列里调用 `XxxTab.init()`
+     （`Tabs.init()` 会自动识别 `[data-tab]` 按钮，不需要改切换逻辑）
+  4. 后端加对应 API endpoint（`handlers_xxx.go`）+ 纯函数 `xxx_args.go` + 测试

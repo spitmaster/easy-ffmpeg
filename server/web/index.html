@@ -20,7 +20,7 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="convert">视频转换</button>
-    <button class="tab" data-tab="trim" disabled>视频裁剪</button>
+    <button class="tab" data-tab="trim">视频裁剪</button>
     <button class="tab" data-tab="audio">音频处理</button>
     <button class="tab" data-tab="info" disabled>媒体信息</button>
     <button class="tab" data-tab="settings" disabled>设置</button>
@@ -329,6 +329,138 @@
           <span id="audioFinishText"></span>
           <div class="spacer"></div>
           <button id="audioFinishRevealBtn" class="btn hidden">📂 打开文件夹</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="panel-trim">
+      <div class="field">
+        <label>输入视频</label>
+        <div class="row">
+          <button class="btn" id="trimPickInput">选择文件</button>
+          <input id="trimInput" type="text" placeholder="选择或粘贴输入视频路径..." />
+        </div>
+        <div id="trimProbeStatus" class="muted">选择文件后自动探测</div>
+      </div>
+
+      <div class="trim-block" data-enabled="false" id="trimTimeBlock">
+        <div class="trim-block-header">
+          <label>
+            <input type="checkbox" id="trimTimeEnable">
+            <span>时间裁剪</span>
+          </label>
+        </div>
+        <div class="trim-block-body">
+          <div class="row inline-fields">
+            <label>起始 <input type="text" id="trimStart" value="00:00:00" placeholder="HH:MM:SS"></label>
+            <label>结束 <input type="text" id="trimEnd" value="00:00:00" placeholder="HH:MM:SS"></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="trim-block" data-enabled="false" id="trimCropBlock">
+        <div class="trim-block-header">
+          <label>
+            <input type="checkbox" id="trimCropEnable">
+            <span>空间裁剪</span>
+          </label>
+        </div>
+        <div class="trim-block-body">
+          <div class="row inline-fields">
+            <label>X <input type="number" id="trimCropX" value="0" min="0"></label>
+            <label>Y <input type="number" id="trimCropY" value="0" min="0"></label>
+            <label>宽 <input type="number" id="trimCropW" value="0" min="1"></label>
+            <label>高 <input type="number" id="trimCropH" value="0" min="1"></label>
+          </div>
+          <div class="muted trim-hint">需满足 X + 宽 ≤ 源宽、Y + 高 ≤ 源高</div>
+        </div>
+      </div>
+
+      <div class="trim-block" data-enabled="false" id="trimScaleBlock">
+        <div class="trim-block-header">
+          <label>
+            <input type="checkbox" id="trimScaleEnable">
+            <span>分辨率缩放</span>
+          </label>
+        </div>
+        <div class="trim-block-body">
+          <div class="row inline-fields">
+            <label>预设
+              <select id="trimScalePreset">
+                <option value="source">原始</option>
+                <option value="480p">480p (854×480)</option>
+                <option value="720p">720p (1280×720)</option>
+                <option value="1080p">1080p (1920×1080)</option>
+                <option value="4k">4K (3840×2160)</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label class="keep-ratio"><input type="checkbox" id="trimScaleKeepRatio"> 保持比例</label>
+          </div>
+          <div class="row inline-fields">
+            <label>宽 <input type="number" id="trimScaleW" value="0" min="1"></label>
+            <label>高 <input type="number" id="trimScaleH" value="0" min="1"></label>
+          </div>
+          <div class="muted trim-hint">勾选"保持比例"后，留空一维，另一维自动保持纵横比</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>输出目录 / 文件名</label>
+        <div class="row">
+          <button class="btn" id="trimPickOutDir">选择目录</button>
+          <input id="trimOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+          <button class="btn btn-icon" id="trimOpenOutDir" title="在资源管理器中打开输出目录" disabled>📂</button>
+          <input id="trimOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>编码器 / 格式</label>
+        <div class="row">
+          <select id="trimVideoEncoder">
+            <option value="h264">h264 (H.264/AVC)</option>
+            <option value="h265">h265 (H.265/HEVC)</option>
+            <option value="vp9">vp9 (VP9)</option>
+            <option value="av1">av1 (AV1)</option>
+            <option value="mpeg4">mpeg4 (MPEG-4)</option>
+          </select>
+          <select id="trimAudioEncoder">
+            <option value="aac">aac (AAC)</option>
+            <option value="mp3">mp3 (MP3)</option>
+            <option value="libopus">libopus (Opus)</option>
+            <option value="libvorbis">libvorbis (Vorbis)</option>
+            <option value="copy">copy (拷贝)</option>
+          </select>
+          <select id="trimFormat">
+            <option value="mp4">mp4</option>
+            <option value="mkv">mkv</option>
+            <option value="avi">avi</option>
+            <option value="mov">mov</option>
+            <option value="flv">flv</option>
+            <option value="webm">webm</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>命令预览</label>
+        <pre id="trimCommandPreview" class="command-preview">ffmpeg ...</pre>
+      </div>
+
+      <div class="action-row">
+        <button id="trimStartBtn" class="btn btn-primary">开始裁剪</button>
+        <button id="trimCancelBtn" class="btn btn-danger" disabled>取消</button>
+        <span id="trimJobState" class="muted">空闲</span>
+      </div>
+
+      <div class="field">
+        <label>处理日志</label>
+        <div id="trimLog" class="log"></div>
+        <div id="trimFinishBar" class="finish-bar hidden">
+          <span id="trimFinishText"></span>
+          <div class="spacer"></div>
+          <button id="trimFinishRevealBtn" class="btn hidden">📂 打开文件夹</button>
         </div>
       </div>
     </section>

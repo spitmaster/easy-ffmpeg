@@ -127,7 +127,7 @@ main {
 .row > select:first-of-type { flex: 2; }
 
 /* ---------------- form controls ---------------- */
-input[type="text"], select {
+input[type="text"], input[type="number"], select {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
@@ -138,10 +138,10 @@ input[type="text"], select {
   outline: none;
   transition: border-color 0.15s;
 }
-input[type="text"]:focus, select:focus {
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
   border-color: var(--accent);
 }
-input[type="text"]::placeholder { color: var(--muted); }
+input[type="text"]::placeholder, input[type="number"]::placeholder { color: var(--muted); }
 
 select {
   appearance: none;
@@ -282,6 +282,86 @@ select {
 .radio-row { display: flex; gap: 20px; flex-wrap: wrap; padding: 4px 0; }
 .radio-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; color: var(--text); }
 .radio-row input[type="radio"] { accent-color: var(--accent); }
+
+/* ---------------- trim blocks ---------------- */
+
+/* trim tab 内容较多，让整个 panel 自己滚动 */
+#panel-trim { overflow-y: auto; }
+#panel-trim > .field:last-child {
+  flex: 0 0 auto;
+  min-height: 240px;
+  max-height: 340px;
+}
+
+.trim-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--surface);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s;
+}
+.trim-block[data-enabled="true"] { border-color: var(--accent); }
+
+.trim-block-header label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+.trim-block-header input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.trim-block-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 24px;
+  opacity: 0.45;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.trim-block[data-enabled="true"] .trim-block-body {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.trim-hint { font-size: 12px; }
+
+.inline-fields { display: flex; gap: 12px; flex-wrap: wrap; }
+.inline-fields > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 140px;
+}
+.inline-fields > label.keep-ratio {
+  flex: 0 0 auto;
+  gap: 6px;
+  cursor: pointer;
+}
+.inline-fields > label.keep-ratio input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+.inline-fields > label > input,
+.inline-fields > label > select {
+  flex: 1;
+  min-width: 60px;
+}
 
 /* ---------------- audio merge list ---------------- */
 .merge-list {

@@ -34,7 +34,15 @@
 | `logMiddleware` | 记录 API 请求日志；排除 `silentPaths` 中的高频轮询端点 |
 | `silentPaths` | `map[string]bool{"/api/prepare/status": true}`，避免控制台被解压轮询刷屏 |
 
-### 2.2 `handlers.go` — 所有 API 处理器
+### 2.2 API 路由总览
+
+HTTP handler 已经按功能拆分到 3 个文件，职责如下：
+
+| 文件 | 承接的 API | 备注 |
+|------|-----------|------|
+| `handlers.go` | 共享基础设施 + convert | fs / config / ffmpeg / prepare / quit + convert |
+| `handlers_audio.go` | `/api/audio/*` | probe / start / cancel，外加 `scheduleCleanup` 帮助 merge 清理临时列表文件 |
+| `handlers_trim.go` | `/api/trim/*` | probe / start / cancel |
 
 | 路由 | Handler | 作用 |
 |------|---------|------|
@@ -49,15 +57,65 @@
 | `POST /api/config/dirs` | `handleConfigDirs` | 写入 inputDir/outputDir |
 | `POST /api/convert/start` | `handleConvertStart` | 校验 → `buildFFmpegArgs` → `jobs.Start` |
 | `POST /api/convert/cancel` | `handleConvertCancel` | `jobs.Cancel()` |
-| `GET /api/convert/stream` | `handleConvertStream` | SSE；订阅 `jobs.Subscribe` → 写 `data: <json>\n\n` + Flush |
+| `GET /api/convert/stream` | `handleConvertStream` | SSE；订阅 `jobs.Subscribe` → 写 `data: <json>\n\n` + Flush（**所有 Tab 共享**） |
+| `POST /api/audio/probe` | `handleAudioProbe` | `service.ProbeAudio` → JSON |
+| `POST /api/audio/start` | `handleAudioStart` | `BuildAudioArgs`（convert / extract / merge；merge 的 `auto` 策略在此通过 `resolveMergeStrategy` 用 ffprobe 解析）|
+| `POST /api/audio/cancel` | `handleAudioCancel` | `jobs.Cancel()` |
+| `POST /api/trim/probe` | `handleTrimProbe` | `service.ProbeVideo` → JSON |
+| `POST /api/trim/start` | `handleTrimStart` | `BuildTrimArgs`（trim/crop/scale 可组合） |
+| `POST /api/trim/cancel` | `handleTrimCancel` | `jobs.Cancel()` |
 | `POST /api/quit` | `handleQuit` | 返回 200 后 `RequestShutdown()` |
 
-关键辅助：
-- `buildFFmpegArgs(req convertRequest) []string`：构造命令参数数组
+关键辅助（handlers.go 内）：
+- `buildFFmpegArgs(req convertRequest) []string`：convert Tab 的命令参数数组
 - `normalizeVideoCodec(name) string`：`h264 → libx264`，`h265 → libx265` 等
 - `normalizeAudioCodec(name) string`：空字符串默认 `aac`
 
-### 2.3 `web/` — 前端资源（go:embed）
+### 2.3 `audio_args.go` — 音频命令构建器
+
+纯函数，无 I/O（merge 的 copy 策略涉及临时文件，但封装在 `writeConcatList` + 返回 `Cleanup` 闭包里，便于测试）。
+
+| 符号 | 说明 |
+|------|------|
+| `AudioRequest` struct | 三模式的请求体联合（convert/extract/merge 各取所需字段） |
+| `AudioBuildResult` struct | `{Args, OutputPath, Cleanup}` |
+| `BuildAudioArgs(req)` | 分派到各模式构建器 |
+| `buildConvertAudioArgs` | 音频格式转换 / 压缩 |
+| `buildExtractAudioArgs` | 从视频提取音轨（`-vn -map 0:a:<idx>`，copy 或 transcode） |
+| `buildMergeAudioArgs` | 合并：`copy` 走 concat demuxer + 临时列表文件；`reencode` 走 `-filter_complex concat` |
+| `formatConcatList(paths)` | 生成 `-f concat` 列表文件内容；单引号转义 |
+| `bitrateApplies(spec, codec, bitrate)` | 判定是否加 `-b:a`（lossless 容器 / PCM / copy 都抑制）|
+| `audioFormatTable` | 容器 → 合法编码器白名单（mp3/m4a/flac/wav/ogg/opus） |
+
+详见 [audio-feature-design.md](audio-feature-design.md)。
+
+### 2.4 `trim_args.go` — 视频裁剪命令构建器
+
+纯函数。支持时间裁剪 / 空间裁剪 / 分辨率缩放任意组合。
+
+| 符号 | 说明 |
+|------|------|
+| `TrimRequest` struct | 主字段 + 三个可启用的操作块：`Trim` / `Crop` / `Scale` |
+| `TrimBuildResult` struct | `{Args, OutputPath}` |
+| `BuildTrimArgs(req)` | 按启用项叠加参数：`-ss/-to`、`-vf crop=...,scale=...`、`-c:v/-c:a` |
+| `validateTrim(t)` | 校验 `HH:MM:SS[.mmm]` + `start < end` |
+| `parseTimeSeconds(s)` | 时间字符串 → 秒（浮点） |
+| `validateCrop(c)` | 宽高 > 0；X/Y 非负 |
+| `resolveScale(s)` | 处理 `KeepRatio` → 把空的一维变 `-2`（ffmpeg 自动等比） |
+| `trimTimeRE` | `^(\d{1,2}):(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$` |
+
+详见 [trim-feature-design.md](trim-feature-design.md)。
+
+### 2.5 测试覆盖
+
+| 文件 | 覆盖 |
+|------|------|
+| `audio_args_test.go` | convert / extract / merge 三种模式的正反路径，formatConcatList 单引号转义，bitrateApplies 矩阵 |
+| `trim_args_test.go` | trim+crop+scale 组合矩阵，parseTimeSeconds，resolveScale keep-ratio，错误分支 |
+
+目前 `server` 是唯一有测试的包。其余包暂无 `_test.go`（参考 [roadmap.md](roadmap.md) §2.6）。
+
+### 2.6 `web/` — 前端资源（go:embed）
 
 通过 `//go:embed web` + `fs.Sub` 映射到 `GET /`。内容详见 [ui-design.md](ui-design.md)。
 
@@ -65,7 +123,7 @@
 
 **职责**：业务层门面，对 `server` 屏蔽底层 `embedded` 细节。
 
-### `ffmpeg.go`
+### 3.1 `ffmpeg.go`
 
 | 函数 | 行为 |
 |------|------|
@@ -76,6 +134,25 @@
 | `IsEmbedded() bool` | 探测嵌入二进制是否可用 |
 | `Prepare() error` | 触发 `embedded.GetFFmpegBinary()` 解压；供 `main.go` 在 goroutine 里预热 |
 | `GetFFmpegDir() (string, error)` | 返回 ffmpeg 所在目录（用于"在文件管理器打开"功能） |
+
+### 3.2 `probe.go` — ffprobe 封装
+
+统一类型（便于复用）：
+
+| 类型 | 字段 |
+|------|------|
+| `MediaFormat` | `Duration / BitRate / Size` — 音频视频通用 |
+| `AudioStream` | `Index / CodecName / Channels / SampleRate / BitRate / Language / Title`；Index 是**音频流内部** 0-based 位置，供 `-map 0:a:<Index>` |
+| `VideoStream` | `CodecName / Width / Height / FrameRate` |
+| `ProbeResult` | `Format + Streams []AudioStream`（`ProbeAudio` 返回） |
+| `VideoProbeResult` | `Format + Video + Audio *AudioStream`（`ProbeVideo` 返回，取首条音视频流） |
+
+| 函数 | 行为 |
+|------|------|
+| `ProbeAudio(path) (*ProbeResult, error)` | `ffprobe -select_streams a` 只看音频流 |
+| `ProbeVideo(path) (*VideoProbeResult, error)` | 不选流，取首条 video + 首条 audio |
+| `runFFprobe(path, extra...) []byte` | 内部 helper；`procutil.HideWindow` 防 Windows 弹黑窗 |
+| `parseRational(candidates...)` | 把 ffprobe 的 `"30000/1001"` 这类 rational 串转 float（按顺序 fallback） |
 
 ## 4. `internal/embedded/`
 
@@ -182,14 +259,20 @@ if pendingProgress != "":
 
 `scanLinesOrCR` 同时在 `\r` 和 `\n` 处切分。这是必须的：FFmpeg 每次刷新进度写的是 `\r`（覆盖同一行），标准 `bufio.ScanLines` 只识别 `\n` 会导致所有进度在一整段累积，直到程序结束才吐出来。
 
-### 5.4 平台分片
+### 5.4 子进程窗口抑制
 
-| 文件 | 构建标签 | 作用 |
+`job.Manager.Start` 在 `exec.Command` 后立刻调 `procutil.HideWindow(cmd)`（见 §6.5）。Windows 下会设 `CREATE_NO_WINDOW` 标志位，防止每次转码/探测都弹黑色控制台；其他平台是空 no-op。同一 helper 被 `service.probe.go` 的 `runFFprobe` 复用。
+
+## 6. `internal/procutil/`
+
+**职责**：抽出 `job` 与 `service/probe` 共用的子进程跨平台适配。避免在两个包里各维护一份 `hide_*.go`。
+
+| 文件 | 构建标签 | 导出 |
 |------|----------|------|
-| `hide_windows.go` | `//go:build windows` | `cmd.SysProcAttr.CreationFlags = CREATE_NO_WINDOW` 防止弹黑窗 |
-| `hide_other.go`   | `//go:build !windows` | 空实现 |
+| `hide_windows.go` | `//go:build windows`  | `HideWindow(cmd *exec.Cmd)` 设置 `CREATE_NO_WINDOW` |
+| `hide_other.go`   | `//go:build !windows` | `HideWindow` no-op |
 
-## 6. `internal/browser/`
+## 7. `internal/browser/`
 
 **职责**：跨平台打开 URL 或本地路径。
 
@@ -207,7 +290,7 @@ func Open(url string) error {
 
 对 URL 和本地路径都适用（`start` 会派给 URL handler 或 Explorer，取决于参数形式）。
 
-## 7. `config/`
+## 8. `config/`
 
 **职责**：用户偏好持久化。
 
@@ -220,16 +303,18 @@ func Open(url string) error {
 
 纯文本单行。后续要加更多配置项可以升级为单个 JSON/TOML。
 
-## 8. 根级文件
+## 9. 根级文件与 `tools/`
 
 | 文件 | 作用 |
 |------|------|
-| `build.bat` | Windows cmd/PowerShell 一键编译四平台 |
-| `build.sh`  | bash 一键编译四平台（macOS/Linux/Git Bash） |
+| `build.bat` / `build.sh` | 一键编译四平台（Windows / macOS arm64 & amd64 / Linux），并为 macOS 二进制自动封 `.app` Bundle |
 | `go.mod` / `go.sum` | Go 依赖描述 |
-| `tools/download_windows.go` | 开发期：从 gyan.dev 下载 Windows FFmpeg；当前已被 7z 方案取代，保留为历史工具 |
+| `tools/build_icon.go` | 开发期：把 PNG 图标烧成 Windows 资源文件（生成 `cmd/rsrc_windows.syso`） |
+| `tools/build_macapp.go` | 把 macOS 纯二进制包成 `.app` Bundle（含 Info.plist + icon.icns），供 `build.{bat,sh}` 的最后一步调用 |
+| `tools/download_windows.go` | 历史：从 gyan.dev 下载 Windows FFmpeg；当前已被 7z 嵌入方案取代，保留为参考 |
+| `assets/icon.svg` / `icon.icns` | 品牌图标源文件 |
 
-## 9. 依赖清单（go.mod 间接 + 直接）
+## 10. 依赖清单（go.mod 间接 + 直接）
 
 | 依赖 | 用途 |
 |------|------|

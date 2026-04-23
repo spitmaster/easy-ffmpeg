@@ -12,15 +12,7 @@
   - 前端：新 Tab，文件选择器 + 结构化展示（视频/音频流、时长、码率、编码）
 - 是打通 `service` 层调 FFprobe → 解析 JSON → 展示的样板
 
-### 1.2 视频裁剪 Tab
-
-- 时间轴裁剪 `-ss <start> -to <end>`
-- 空间裁剪 `-vf crop=w:h:x:y`
-- 分辨率缩放 `-vf scale=w:h`
-- UI 上加时间滑块（需先拿 ffprobe 读时长）
-- 复用转码 Tab 的 SSE + 日志 + 取消范式
-
-### 1.3 设置 Tab
+### 1.2 设置 Tab
 
 - 默认输出目录、默认编码器
 - 语言切换（配合 i18n）
@@ -55,11 +47,11 @@
 - 没有比特率、分辨率、帧率等高级参数
 - 没有 `-preset`、`-crf` 等质量控制
 
-### 2.4 旧 Fyne 时代的脚手架
+### 2.4 旧 Fyne 时代 / 根级文档的残留
 
 - `tools/download_windows.go`：原 Fyne 时代的 ffmpeg 下载工具。现在 7z 方案下需要手动打包 7z，此工具路径失效。保留作为历史参考。
-- `app/`、`model/`：空目录，`STRUCTURE.md` 里有提但没内容。要么填充，要么删除。
-- `EMBEDDED_SETUP.md`、`STRUCTURE.md`、`BUILD.md`：和 `design/` 有重复/过时内容。考虑合并。
+- `model/`：空目录，`STRUCTURE.md` 里有提但没内容。要么填充，要么删除。
+- `EMBEDDED_SETUP.md`、`STRUCTURE.md`、`BUILD.md`：和 `design/` 有重复/过时内容（例如 `STRUCTURE.md` 里还在讲 `ui/ui.go` 的 Fyne 时代结构）。考虑合并到 `design/` 或直接删除。
 
 ### 2.5 `/api/fs/reveal` 在 macOS / Linux 的行为一致性
 
@@ -69,12 +61,17 @@
 
 需要在 Linux 多桌面环境下测试。
 
-### 2.6 无单元测试
+### 2.6 测试覆盖仍偏薄
 
-项目目前完全没有 `*_test.go`。至少应补：
-- `handlers.buildFFmpegArgs` 的参数构造纯函数
-- `embedded.scanLinesOrCR` 的自定义 splitter（处理 \r \n \r\n 混合）
-- `embedded.parseFFmpegVersion` 的前端正则
+目前已有的测试：
+- `server/audio_args_test.go`：convert / extract / merge 三模式的正反路径、concat 列表单引号转义、bitrate 条件矩阵
+- `server/trim_args_test.go`：trim/crop/scale 组合、时间解析、保持比例 `-2` 语义
+
+还缺的关键测试：
+- `handlers.buildFFmpegArgs`（convert 分支）
+- `job.scanLinesOrCR`（\r \n \r\n 混合）
+- 前端 `parseFFmpegVersion` / `Time.parse` 正则（目前只在 Go 侧测了类似的 `parseTimeSeconds`）
+- `service.ProbeAudio / ProbeVideo` 的 JSON 解析（可以用 testdata 固定样例，不调真实 ffprobe）
 
 ### 2.7 解压过程的 UX 细节
 
@@ -89,11 +86,9 @@
 - `handleConvertStream` 在客户端断开时 `ctx.Done()` 正常清理
 - 但如果服务端长期运行 + 客户端反复刷新，`subscribers` map 的清理依赖 `defer unsub()`。可以用 leak 检测验证
 
-### 2.9 `server/web/index.html` Tab 没有切换逻辑
+### 2.9 ~~Tab 切换逻辑~~（已完成）
 
-现在只有"视频转换"一个可用 Tab，其他 disabled。添加新 Tab 前需先实现：
-- `app.js` 里的 tab 点击切换
-- `<section class="panel">` 的显示/隐藏管理
+Tab 切换已在 `app.js` 的 `Tabs` IIFE 中落地：识别 `[data-tab]`、给对应 button 加 `.active`、按 id 切 `.panel .hidden`。加 Tab 时不用再改切换代码。
 
 ## 3. 功能增强候选
 
@@ -134,6 +129,7 @@
 | v1.5 | FFmpeg 版本 chip + 点击打开缓存目录 + 输出目录 📂 按钮 |
 | v1.6 | 统一构建脚本 `build.bat` / `build.sh` |
 | v1.7 | 音频处理 Tab（格式转换 / 提取 / 合并）落地；app.js 重构为模块化 IIFE；新增 `/api/audio/*` 端点 |
+| v1.8 | 视频裁剪 Tab（时间 / 空间 / 分辨率，三组独立开关）；`service.ProbeVideo`；`/api/trim/*` 端点 |
 
 ## 6. 非目标（本阶段不做）
 
