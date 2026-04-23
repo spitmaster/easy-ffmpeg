@@ -24,11 +24,12 @@ dir /B dist
 exit /b 0
 
 :build
+setlocal
 echo ==^> Building %~1/%~2 -^> dist\%~3
 set GOOS=%~1
 set GOARCH=%~2
 go build -ldflags="%LDFLAGS%" -o "dist\%~3" ./cmd
-exit /b %ERRORLEVEL%
+endlocal & exit /b %ERRORLEVEL%
 
 :fail
 echo.
