@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Easy FFmpeg</title>
   <link rel="stylesheet" href="/app.css" />
+  <link rel="stylesheet" href="/editor/editor.css" />
 </head>
 <body>
   <header class="topbar">
@@ -20,8 +21,8 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="convert">视频转换</button>
-    <button class="tab" data-tab="trim">视频裁剪</button>
     <button class="tab" data-tab="audio">音频处理</button>
+    <button class="tab" data-tab="editor">视频剪辑</button>
     <button class="tab" data-tab="info" disabled>媒体信息</button>
     <button class="tab" data-tab="settings" disabled>设置</button>
   </nav>
@@ -333,138 +334,159 @@
       </div>
     </section>
 
-    <section class="panel hidden" id="panel-trim">
-      <div class="field">
-        <label>输入视频</label>
-        <div class="row">
-          <button class="btn" id="trimPickInput">选择文件</button>
-          <input id="trimInput" type="text" placeholder="选择或粘贴输入视频路径..." />
-        </div>
-        <div id="trimProbeStatus" class="muted">选择文件后自动探测</div>
+    <section class="panel hidden" id="panel-editor">
+      <!-- 顶栏 -->
+      <div class="editor-topbar">
+        <button class="btn" id="edOpenVideo">📂 打开视频</button>
+        <button class="btn" id="edProjects">📋 剪辑记录</button>
+        <input type="text" id="edProjectName" class="editor-project-name" placeholder="工程名" />
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="edExport" disabled>导出</button>
       </div>
 
-      <div class="trim-block" data-enabled="false" id="trimTimeBlock">
-        <div class="trim-block-header">
-          <label>
-            <input type="checkbox" id="trimTimeEnable">
-            <span>时间裁剪</span>
-          </label>
-        </div>
-        <div class="trim-block-body">
-          <div class="row inline-fields">
-            <label>起始 <input type="text" id="trimStart" value="00:00:00" placeholder="HH:MM:SS"></label>
-            <label>结束 <input type="text" id="trimEnd" value="00:00:00" placeholder="HH:MM:SS"></label>
-          </div>
-        </div>
+      <!-- 空态 -->
+      <div class="editor-empty" id="edEmpty">
+        <div class="editor-empty-title">尚未导入视频</div>
+        <div class="editor-empty-hint">点击顶栏「📂 打开视频」选择要剪辑的视频文件，或从「📋 剪辑记录」打开历史工程</div>
       </div>
 
-      <div class="trim-block" data-enabled="false" id="trimCropBlock">
-        <div class="trim-block-header">
-          <label>
-            <input type="checkbox" id="trimCropEnable">
-            <span>空间裁剪</span>
-          </label>
+      <!-- 工作区 -->
+      <div class="editor-workspace hidden" id="edWorkspace">
+        <!-- 预览 -->
+        <div class="editor-preview">
+          <video id="edVideo" preload="auto"></video>
         </div>
-        <div class="trim-block-body">
-          <div class="row inline-fields">
-            <label>X <input type="number" id="trimCropX" value="0" min="0"></label>
-            <label>Y <input type="number" id="trimCropY" value="0" min="0"></label>
-            <label>宽 <input type="number" id="trimCropW" value="0" min="1"></label>
-            <label>高 <input type="number" id="trimCropH" value="0" min="1"></label>
-          </div>
-          <div class="muted trim-hint">需满足 X + 宽 ≤ 源宽、Y + 高 ≤ 源高</div>
-        </div>
-      </div>
 
-      <div class="trim-block" data-enabled="false" id="trimScaleBlock">
-        <div class="trim-block-header">
-          <label>
-            <input type="checkbox" id="trimScaleEnable">
-            <span>分辨率缩放</span>
-          </label>
-        </div>
-        <div class="trim-block-body">
-          <div class="row inline-fields">
-            <label>预设
-              <select id="trimScalePreset">
-                <option value="source">原始</option>
-                <option value="480p">480p (854×480)</option>
-                <option value="720p">720p (1280×720)</option>
-                <option value="1080p">1080p (1920×1080)</option>
-                <option value="4k">4K (3840×2160)</option>
-                <option value="custom">自定义</option>
-              </select>
-            </label>
-            <label class="keep-ratio"><input type="checkbox" id="trimScaleKeepRatio"> 保持比例</label>
-          </div>
-          <div class="row inline-fields">
-            <label>宽 <input type="number" id="trimScaleW" value="0" min="1"></label>
-            <label>高 <input type="number" id="trimScaleH" value="0" min="1"></label>
-          </div>
-          <div class="muted trim-hint">勾选"保持比例"后，留空一维，另一维自动保持纵横比</div>
-        </div>
-      </div>
-
-      <div class="field">
-        <label>输出目录 / 文件名</label>
-        <div class="row">
-          <button class="btn" id="trimPickOutDir">选择目录</button>
-          <input id="trimOutDir" type="text" placeholder="输出目录..." style="flex:2" />
-          <button class="btn btn-icon" id="trimOpenOutDir" title="在资源管理器中打开输出目录" disabled>📂</button>
-          <input id="trimOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
-        </div>
-      </div>
-
-      <div class="field">
-        <label>编码器 / 格式</label>
-        <div class="row">
-          <select id="trimVideoEncoder">
-            <option value="h264">h264 (H.264/AVC)</option>
-            <option value="h265">h265 (H.265/HEVC)</option>
-            <option value="vp9">vp9 (VP9)</option>
-            <option value="av1">av1 (AV1)</option>
-            <option value="mpeg4">mpeg4 (MPEG-4)</option>
-          </select>
-          <select id="trimAudioEncoder">
-            <option value="aac">aac (AAC)</option>
-            <option value="mp3">mp3 (MP3)</option>
-            <option value="libopus">libopus (Opus)</option>
-            <option value="libvorbis">libvorbis (Vorbis)</option>
-            <option value="copy">copy (拷贝)</option>
-          </select>
-          <select id="trimFormat">
-            <option value="mp4">mp4</option>
-            <option value="mkv">mkv</option>
-            <option value="avi">avi</option>
-            <option value="mov">mov</option>
-            <option value="flv">flv</option>
-            <option value="webm">webm</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="field">
-        <label>命令预览</label>
-        <pre id="trimCommandPreview" class="command-preview">ffmpeg ...</pre>
-      </div>
-
-      <div class="action-row">
-        <button id="trimStartBtn" class="btn btn-primary">开始裁剪</button>
-        <button id="trimCancelBtn" class="btn btn-danger" disabled>取消</button>
-        <span id="trimJobState" class="muted">空闲</span>
-      </div>
-
-      <div class="field">
-        <label>处理日志</label>
-        <div id="trimLog" class="log"></div>
-        <div id="trimFinishBar" class="finish-bar hidden">
-          <span id="trimFinishText"></span>
+        <!-- 播控 -->
+        <div class="editor-playbar">
+          <button class="btn btn-icon" id="edPrevClip" title="上一片段 (←)">⏮</button>
+          <button class="btn btn-icon" id="edPlayPause" title="播放 / 暂停 (Space)">▶</button>
+          <button class="btn btn-icon" id="edNextClip" title="下一片段 (→)">⏭</button>
+          <span class="editor-timecode" id="edTimecode">00:00:00.000 / 00:00:00.000</span>
           <div class="spacer"></div>
-          <button id="trimFinishRevealBtn" class="btn hidden">📂 打开文件夹</button>
+          <label class="editor-volume">🔊 <input type="range" id="edVolume" min="0" max="1" step="0.05" value="1"></label>
+        </div>
+
+        <!-- 时间轴 -->
+        <div class="editor-timeline">
+          <!-- 左侧轨道标签列 -->
+          <div class="timeline-labels">
+            <div class="timeline-label-ruler"></div>
+            <div class="timeline-label video">🎬 视频</div>
+            <div class="timeline-label audio">🔊 音频</div>
+          </div>
+          <!-- 右侧滚动区 -->
+          <div class="timeline-scroll">
+            <div class="timeline-ruler" id="edRuler"></div>
+            <div class="timeline-track timeline-video" id="edVideoTrack">
+              <div class="timeline-playhead timeline-playhead-single" id="edPlayheadVideo" style="display:none"></div>
+            </div>
+            <div class="timeline-track timeline-audio" id="edAudioTrack">
+              <div class="timeline-playhead timeline-playhead-single" id="edPlayheadAudio" style="display:none"></div>
+            </div>
+            <!-- 大游标覆盖 ruler + 两轨 -->
+            <div class="timeline-playhead timeline-playhead-big" id="edPlayheadBig" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 工具条 -->
+        <div class="editor-toolbar">
+          <button class="btn" id="edSplit" title="在播放头位置分割 (S)">✂ 分割</button>
+          <button class="btn btn-danger" id="edDelete" title="删除选中 (Del)" disabled>🗑 删除</button>
+          <button class="btn" id="edUndo" title="撤销 (Ctrl+Z)" disabled>↶ 撤销</button>
+          <button class="btn" id="edRedo" title="重做 (Ctrl+Y)" disabled>↷ 重做</button>
+          <span class="muted editor-scope-label" id="edSplitScopeLabel">当前分割范围：两轨一起</span>
+          <div class="spacer"></div>
+          <label class="editor-zoom">缩放 <input type="range" id="edZoom" min="2" max="40" step="1" value="8"></label>
+        </div>
+      </div>
+
+      <!-- 导出日志面板（复用 JobBus） -->
+      <div class="editor-export-status hidden" id="edExportStatus">
+        <div class="field">
+          <label>导出日志</label>
+          <div id="edExportLog" class="log"></div>
+          <div class="action-row">
+            <button class="btn btn-danger" id="edExportCancelBtn" disabled>取消</button>
+            <span id="edExportState" class="muted">空闲</span>
+          </div>
+          <div class="finish-bar hidden" id="edExportFinishBar">
+            <span id="edExportFinishText"></span>
+            <div class="spacer"></div>
+            <button id="edExportFinishReveal" class="btn hidden">📂 打开文件夹</button>
+          </div>
         </div>
       </div>
     </section>
   </main>
+
+  <!-- 剪辑记录模态框 -->
+  <div class="modal-backdrop hidden" id="edProjectsBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>剪辑记录</h3>
+        <button class="btn btn-ghost" id="edProjectsClose">×</button>
+      </div>
+      <div class="modal-body">
+        <ul class="editor-project-list" id="edProjectList"></ul>
+        <div class="muted editor-project-empty hidden" id="edProjectEmpty">暂无剪辑工程</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导出对话框 -->
+  <div class="modal-backdrop hidden" id="edExportBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>导出</h3>
+        <button class="btn btn-ghost" id="edExportClose">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>格式</label>
+          <select id="edExportFormat">
+            <option value="mp4">mp4</option>
+            <option value="mkv">mkv</option>
+            <option value="mov">mov</option>
+            <option value="webm">webm</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>视频编码</label>
+          <select id="edExportVideoCodec">
+            <option value="h264">h264 (H.264/AVC)</option>
+            <option value="h265">h265 (H.265/HEVC)</option>
+            <option value="vp9">vp9</option>
+            <option value="av1">av1</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>音频编码</label>
+          <select id="edExportAudioCodec">
+            <option value="aac">aac (AAC)</option>
+            <option value="mp3">mp3 (MP3)</option>
+            <option value="libopus">libopus (Opus)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>输出目录</label>
+          <div class="row">
+            <button class="btn" id="edExportPickDir">选择</button>
+            <input type="text" id="edExportOutDir" readonly style="flex:1" />
+          </div>
+        </div>
+        <div class="field">
+          <label>文件名（不含后缀）</label>
+          <input type="text" id="edExportOutName" />
+        </div>
+        <div class="action-row">
+          <div class="spacer"></div>
+          <button class="btn" id="edExportCancel">取消</button>
+          <button class="btn btn-primary" id="edExportStart">开始导出</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- File/Folder picker modal -->
   <div class="modal-backdrop hidden" id="pickerBackdrop">
@@ -506,5 +528,6 @@
   </div>
 
   <script src="/app.js"></script>
+  <script src="/editor/editor.js"></script>
 </body>
 </html>

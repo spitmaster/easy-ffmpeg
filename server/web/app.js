@@ -20,6 +20,19 @@ const Http = {
       body: JSON.stringify(body),
     });
   },
+  getJSON(url) {
+    return Http.fetchJSON(url, { method: "GET" });
+  },
+  putJSON(url, body) {
+    return Http.fetchJSON(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  deleteJSON(url) {
+    return Http.fetchJSON(url, { method: "DELETE" });
+  },
 };
 
 const Fmt = {
@@ -1182,7 +1195,7 @@ const AudioTab = (() => {
 })();
 
 // ============================================================
-//  Time：HH:MM:SS[.ms] 解析 / 格式化（供 TrimTab 与后续功能复用）
+//  Time：HH:MM:SS[.ms] 解析 / 格式化（供 EditorTab 等复用）
 // ============================================================
 
 const Time = (() => {
@@ -1211,333 +1224,6 @@ const Time = (() => {
   }
 
   return { parse, format };
-})();
-
-// ============================================================
-//  TrimTab：视频裁剪（时间 / 空间 / 分辨率 三组独立开关）
-// ============================================================
-
-const TrimTab = (() => {
-  const form = {};
-  let panel;
-  let probe = null; // 最近一次 /api/trim/probe 响应
-
-  // 分辨率预设；custom 表示手动输入
-  const SCALE_PRESETS = {
-    source: null,                       // 由 probe 填充
-    "480p":  { w: 854,  h: 480  },
-    "720p":  { w: 1280, h: 720  },
-    "1080p": { w: 1920, h: 1080 },
-    "4k":    { w: 3840, h: 2160 },
-    custom:  null,
-  };
-
-  function normalizeVideo(v) {
-    if (v === "h264") return "libx264";
-    if (v === "h265") return "libx265";
-    return v;
-  }
-
-  function isEnabled(block) {
-    return block.dataset.enabled === "true";
-  }
-
-  function setEnabled(block, enabled) {
-    block.dataset.enabled = enabled ? "true" : "false";
-  }
-
-  function readForm() {
-    return {
-      inputPath:    form.input.value.trim(),
-      outputDir:    form.outDir.value.trim(),
-      outputName:   form.outName.value.trim(),
-      format:       form.format.value,
-      videoEncoder: form.videoEnc.value,
-      audioEncoder: form.audioEnc.value,
-      trim: {
-        enabled: form.timeEnable.checked,
-        start:   form.startTime.value.trim(),
-        end:     form.endTime.value.trim(),
-      },
-      crop: {
-        enabled: form.cropEnable.checked,
-        x: parseInt(form.cropX.value, 10) || 0,
-        y: parseInt(form.cropY.value, 10) || 0,
-        w: parseInt(form.cropW.value, 10) || 0,
-        h: parseInt(form.cropH.value, 10) || 0,
-      },
-      scale: {
-        enabled: form.scaleEnable.checked,
-        keepRatio: form.scaleKeep.checked,
-        w: parseInt(form.scaleW.value, 10) || 0,
-        h: parseInt(form.scaleH.value, 10) || 0,
-      },
-    };
-  }
-
-  function validate(body) {
-    if (!body.inputPath)  throw new Error("请选择输入视频");
-    if (!body.outputDir)  throw new Error("请选择输出目录");
-    if (!body.outputName) throw new Error("请输入输出文件名");
-    if (!body.trim.enabled && !body.crop.enabled && !body.scale.enabled) {
-      throw new Error("请至少启用一项操作（时间裁剪 / 空间裁剪 / 分辨率缩放）");
-    }
-
-    if (body.trim.enabled) {
-      const a = Time.parse(body.trim.start);
-      const b = Time.parse(body.trim.end);
-      if (a >= b) throw new Error("时间裁剪：起始必须早于结束");
-    }
-
-    if (body.crop.enabled) {
-      if (body.crop.w <= 0 || body.crop.h <= 0) {
-        throw new Error("空间裁剪：宽与高必须大于 0");
-      }
-      if (probe && probe.video && probe.video.width) {
-        if (body.crop.x + body.crop.w > probe.video.width ||
-            body.crop.y + body.crop.h > probe.video.height) {
-          throw new Error("空间裁剪：矩形超出源画面范围");
-        }
-      }
-    }
-
-    if (body.scale.enabled) {
-      const w = body.scale.w, h = body.scale.h;
-      if (body.scale.keepRatio) {
-        if (w <= 0 && h <= 0) throw new Error("分辨率缩放：保持比例时至少填一维");
-      } else if (w <= 0 || h <= 0) {
-        throw new Error("分辨率缩放：宽与高必须大于 0");
-      }
-    }
-  }
-
-  function getOutputPath(body) {
-    return Path.join(body.outputDir, `${body.outputName}.${body.format}`);
-  }
-
-  function buildPreview() {
-    const body = readForm();
-    if (!body.inputPath || !body.outputDir || !body.outputName) return "";
-    const parts = [`ffmpeg -y -i "${body.inputPath}"`];
-    if (body.trim.enabled) {
-      parts.push(`-ss ${body.trim.start || "00:00:00"}`);
-      parts.push(`-to ${body.trim.end || "00:00:00"}`);
-    }
-    const filters = [];
-    if (body.crop.enabled) {
-      filters.push(`crop=${body.crop.w}:${body.crop.h}:${body.crop.x}:${body.crop.y}`);
-    }
-    if (body.scale.enabled) {
-      const w = body.scale.keepRatio && body.scale.w <= 0 ? -2 : body.scale.w;
-      const h = body.scale.keepRatio && body.scale.h <= 0 ? -2 : body.scale.h;
-      filters.push(`scale=${w}:${h}`);
-    }
-    if (filters.length) parts.push(`-vf ${filters.join(",")}`);
-    parts.push(`-c:v ${normalizeVideo(body.videoEncoder)} -c:a ${body.audioEncoder}`);
-    parts.push(`"${getOutputPath(body)}"`);
-    return parts.join(" ");
-  }
-
-  function updateCommandPreview() {
-    const pre = $("trimCommandPreview");
-    try {
-      const cmd = buildPreview();
-      pre.textContent = cmd || "ffmpeg ...";
-    } catch {
-      pre.textContent = "ffmpeg ...";
-    }
-  }
-
-  function refreshOpenOutDirBtn() {
-    $("trimOpenOutDir").disabled = !form.outDir.value.trim();
-  }
-
-  function applyScalePreset() {
-    const v = form.scalePreset.value;
-    if (v === "custom") return;
-    const preset = SCALE_PRESETS[v];
-    if (!preset) return; // "source" 还没 probe
-    form.scaleW.value = preset.w;
-    form.scaleH.value = preset.h;
-  }
-
-  function renderProbeStatus() {
-    if (!probe) return;
-    const bits = [];
-    if (probe.format && probe.format.duration) {
-      bits.push(Time.format(probe.format.duration).replace(/\.000$/, ""));
-    }
-    if (probe.video && probe.video.width) {
-      bits.push(`${probe.video.width}×${probe.video.height}`);
-    }
-    if (probe.video && probe.video.codecName) bits.push(probe.video.codecName);
-    if (probe.video && probe.video.frameRate) {
-      bits.push(`${probe.video.frameRate.toFixed(2)} fps`);
-    }
-    form.probeStatus.textContent = bits.join(" · ") || "无可用信息";
-  }
-
-  function applyProbeDefaults() {
-    if (!probe) return;
-    if (probe.format && probe.format.duration) {
-      form.endTime.value = Time.format(probe.format.duration);
-    }
-    const v = probe.video;
-    if (v && v.width && v.height) {
-      form.cropW.value = v.width;
-      form.cropH.value = v.height;
-      SCALE_PRESETS.source = { w: v.width, h: v.height };
-      if (form.scalePreset.value === "source") {
-        form.scaleW.value = v.width;
-        form.scaleH.value = v.height;
-      }
-    }
-  }
-
-  async function probeInput(path) {
-    form.probeStatus.textContent = "探测中...";
-    probe = null;
-    try {
-      probe = await Http.postJSON("/api/trim/probe", { path });
-      renderProbeStatus();
-      applyProbeDefaults();
-    } catch (e) {
-      form.probeStatus.textContent = "探测失败: " + e.message;
-    }
-    updateCommandPreview();
-  }
-
-  function init() {
-    Object.assign(form, {
-      input:        $("trimInput"),
-      probeStatus:  $("trimProbeStatus"),
-
-      timeBlock:    $("trimTimeBlock"),
-      timeEnable:   $("trimTimeEnable"),
-      startTime:    $("trimStart"),
-      endTime:      $("trimEnd"),
-
-      cropBlock:    $("trimCropBlock"),
-      cropEnable:   $("trimCropEnable"),
-      cropX:        $("trimCropX"),
-      cropY:        $("trimCropY"),
-      cropW:        $("trimCropW"),
-      cropH:        $("trimCropH"),
-
-      scaleBlock:   $("trimScaleBlock"),
-      scaleEnable:  $("trimScaleEnable"),
-      scalePreset:  $("trimScalePreset"),
-      scaleKeep:    $("trimScaleKeepRatio"),
-      scaleW:       $("trimScaleW"),
-      scaleH:       $("trimScaleH"),
-
-      outDir:       $("trimOutDir"),
-      outName:      $("trimOutName"),
-      videoEnc:     $("trimVideoEncoder"),
-      audioEnc:     $("trimAudioEncoder"),
-      format:       $("trimFormat"),
-    });
-
-    panel = createJobPanel({
-      logEl: $("trimLog"),
-      stateEl: $("trimJobState"),
-      startBtn: $("trimStartBtn"),
-      cancelBtn: $("trimCancelBtn"),
-      finishBar: $("trimFinishBar"),
-      finishText: $("trimFinishText"),
-      finishRevealBtn: $("trimFinishRevealBtn"),
-      cancelUrl: "/api/trim/cancel",
-      runningLabel: "裁剪中...",
-      doneLabel: "✓ 裁剪完成",
-      errorLabel: "✗ 裁剪失败",
-      cancelledLabel: "! 裁剪已取消",
-    });
-
-    // 启用开关
-    [
-      [form.timeEnable,  form.timeBlock],
-      [form.cropEnable,  form.cropBlock],
-      [form.scaleEnable, form.scaleBlock],
-    ].forEach(([cb, block]) => {
-      cb.addEventListener("change", () => {
-        setEnabled(block, cb.checked);
-        updateCommandPreview();
-      });
-    });
-
-    // 命令预览实时刷新
-    [
-      form.startTime, form.endTime,
-      form.cropX, form.cropY, form.cropW, form.cropH,
-      form.scalePreset, form.scaleKeep, form.scaleW, form.scaleH,
-      form.outDir, form.outName,
-      form.videoEnc, form.audioEnc, form.format,
-    ].forEach(el => {
-      el.addEventListener("input", updateCommandPreview);
-      el.addEventListener("change", updateCommandPreview);
-    });
-    form.outDir.addEventListener("input", refreshOpenOutDirBtn);
-
-    // 预设联动：切预设自动填宽高（包括 source / 480p / 1080p 等）；手动改宽高 → preset 变 custom
-    form.scalePreset.addEventListener("change", () => {
-      applyScalePreset();
-      updateCommandPreview();
-    });
-    [form.scaleW, form.scaleH].forEach(el => {
-      el.addEventListener("input", () => {
-        if (form.scalePreset.value !== "custom") form.scalePreset.value = "custom";
-      });
-    });
-
-    // Pickers
-    $("trimPickInput").addEventListener("click", async () => {
-      const start = form.input.value || Dirs.get().inputDir || "";
-      const p = await Picker.open({ mode: "file", title: "选择输入视频", startPath: start });
-      if (!p) return;
-      form.input.value = p;
-      const dir = Path.dirname(p);
-      const base = Path.stripExt(Path.basename(p));
-      if (!form.outName.value) form.outName.value = base + "_trimmed";
-      if (dir) await Dirs.saveInput(dir).catch(() => {});
-      await probeInput(p);
-    });
-
-    $("trimPickOutDir").addEventListener("click", async () => {
-      const start = form.outDir.value || Dirs.get().outputDir || "";
-      const p = await Picker.open({ mode: "dir", title: "选择输出目录", startPath: start });
-      if (!p) return;
-      form.outDir.value = p;
-      await Dirs.saveOutput(p).catch(() => {});
-      refreshOpenOutDirBtn();
-      updateCommandPreview();
-    });
-
-    $("trimOpenOutDir").addEventListener("click", async () => {
-      const path = form.outDir.value.trim();
-      if (!path) return;
-      try { await Http.postJSON("/api/fs/reveal", { path }); }
-      catch (e) { alert("打开失败: " + e.message); }
-    });
-
-    $("trimStartBtn").addEventListener("click", async () => {
-      let body;
-      try {
-        body = readForm();
-        validate(body);
-      } catch (e) {
-        alert(e.message);
-        return;
-      }
-      const outputPath = getOutputPath(body);
-      await panel.start({ url: "/api/trim/start", body, outputPath });
-    });
-
-    if (Dirs.get().outputDir) form.outDir.value = Dirs.get().outputDir;
-    refreshOpenOutDirBtn();
-    updateCommandPreview();
-  }
-
-  return { init };
 })();
 
 // ============================================================
@@ -1641,7 +1327,7 @@ const Prepare = (() => {
   Picker.init();
   ConvertTab.init();
   AudioTab.init();
-  TrimTab.init();
+  if (typeof EditorTab !== "undefined") EditorTab.init();
   Tabs.init();
   Quit.init();
   JobBus.connect();

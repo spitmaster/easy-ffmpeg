@@ -36,13 +36,13 @@
 
 ### 2.2 API 路由总览
 
-HTTP handler 已经按功能拆分到 3 个文件，职责如下：
+HTTP handler 拆分到多个文件，职责如下：
 
 | 文件 | 承接的 API | 备注 |
 |------|-----------|------|
 | `handlers.go` | 共享基础设施 + convert | fs / config / ffmpeg / prepare / quit + convert |
 | `handlers_audio.go` | `/api/audio/*` | probe / start / cancel，外加 `scheduleCleanup` 帮助 merge 清理临时列表文件 |
-| `handlers_trim.go` | `/api/trim/*` | probe / start / cancel |
+| `editor_wiring.go` | — | 把 `service.*` / `internal/job.Manager` 适配成 `editor/ports` 接口；`buildEditorModule` 在 `server.go` 的路由注册阶段调用，挂载 `/api/editor/*` |
 
 | 路由 | Handler | 作用 |
 |------|---------|------|
@@ -61,9 +61,12 @@ HTTP handler 已经按功能拆分到 3 个文件，职责如下：
 | `POST /api/audio/probe` | `handleAudioProbe` | `service.ProbeAudio` → JSON |
 | `POST /api/audio/start` | `handleAudioStart` | `BuildAudioArgs`（convert / extract / merge；merge 的 `auto` 策略在此通过 `resolveMergeStrategy` 用 ffprobe 解析）|
 | `POST /api/audio/cancel` | `handleAudioCancel` | `jobs.Cancel()` |
-| `POST /api/trim/probe` | `handleTrimProbe` | `service.ProbeVideo` → JSON |
-| `POST /api/trim/start` | `handleTrimStart` | `BuildTrimArgs`（trim/crop/scale 可组合） |
-| `POST /api/trim/cancel` | `handleTrimCancel` | `jobs.Cancel()` |
+| `GET/POST /api/editor/projects` | editor 模块 | 列出 / 新建工程 |
+| `GET/PUT/DELETE /api/editor/projects/:id` | editor 模块 | 读 / 保存 / 删除单个工程 |
+| `POST /api/editor/probe` | editor 模块 | 复用 `service.ProbeVideo` |
+| `POST /api/editor/export` | editor 模块 | `domain.BuildExportArgs` → `jobs.Start` |
+| `POST /api/editor/export/cancel` | editor 模块 | `jobs.Cancel()` |
+| `GET /api/editor/source?id=<id>` | editor 模块 | 以工程 id 为准把 source 文件通过 `http.ServeContent`（支持 Range）喂给 `<video>` |
 | `POST /api/quit` | `handleQuit` | 返回 200 后 `RequestShutdown()` |
 
 关键辅助（handlers.go 内）：
@@ -89,41 +92,49 @@ HTTP handler 已经按功能拆分到 3 个文件，职责如下：
 
 详见 [audio-feature-design.md](audio-feature-design.md)。
 
-### 2.4 `trim_args.go` — 视频裁剪命令构建器
-
-纯函数。支持时间裁剪 / 空间裁剪 / 分辨率缩放任意组合。
-
-| 符号 | 说明 |
-|------|------|
-| `TrimRequest` struct | 主字段 + 三个可启用的操作块：`Trim` / `Crop` / `Scale` |
-| `TrimBuildResult` struct | `{Args, OutputPath}` |
-| `BuildTrimArgs(req)` | 按启用项叠加参数：`-ss/-to`、`-vf crop=...,scale=...`、`-c:v/-c:a` |
-| `validateTrim(t)` | 校验 `HH:MM:SS[.mmm]` + `start < end` |
-| `parseTimeSeconds(s)` | 时间字符串 → 秒（浮点） |
-| `validateCrop(c)` | 宽高 > 0；X/Y 非负 |
-| `resolveScale(s)` | 处理 `KeepRatio` → 把空的一维变 `-2`（ffmpeg 自动等比） |
-| `trimTimeRE` | `^(\d{1,2}):(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$` |
-
-详见 [trim-feature-design.md](trim-feature-design.md)。
-
-### 2.5 测试覆盖
+### 2.4 测试覆盖
 
 | 文件 | 覆盖 |
 |------|------|
 | `audio_args_test.go` | convert / extract / merge 三种模式的正反路径，formatConcatList 单引号转义，bitrateApplies 矩阵 |
-| `trim_args_test.go` | trim+crop+scale 组合矩阵，parseTimeSeconds，resolveScale keep-ratio，错误分支 |
 
-目前 `server` 是唯一有测试的包。其余包暂无 `_test.go`（参考 [roadmap.md](roadmap.md) §2.6）。
+编辑器的测试在 `editor/` 子包（见 §3），不属于 `server/`。
 
-### 2.6 `web/` — 前端资源（go:embed）
+### 2.5 `web/` — 前端资源（go:embed）
 
-通过 `//go:embed web` + `fs.Sub` 映射到 `GET /`。内容详见 [ui-design.md](ui-design.md)。
+通过 `//go:embed web` + `fs.Sub` 映射到 `GET /`。`server/web/editor/` 目录下存放剪辑器专属的 CSS/JS，由 `index.html` 用 `<link>` / `<script>` 引入。内容详见 [ui-design.md](ui-design.md)。
 
-## 3. `service/`
+## 3. `editor/`
+
+**职责**：视频剪辑器模块，自成一体。详细架构见 [editor-module-design.md](editor-module-design.md)。
+
+分层（严格单向依赖）：
+
+| 子包 | 职责 | 依赖 |
+|------|------|------|
+| `editor/domain/` | 业务类型 + 纯函数：`Project`、`Clip`、`Source`、`ExportSettings`、`ProgramDuration`、`Validate`、`Split/Delete/Reorder/TrimLeft/TrimRight`、`BuildExportArgs` | 仅 stdlib |
+| `editor/ports/` | DIP 接口：`ProjectRepository`、`VideoProber`、`JobRunner`、`PathResolver`、`Clock` + `ProjectSummary`、`VideoInfo` | `domain` |
+| `editor/storage/` | `JSONRepo` 实现 `ProjectRepository`；索引双写 + 原子写 + 损坏自愈 | `domain` + `ports` |
+| `editor/api/` | HTTP handler（projects / probe / export / source）+ DTO + `Router.Register(mux, prefix)` | `domain` + `ports`（不依赖具体存储/探测/任务实现） |
+| `editor/module.go` | 对外唯一入口：`Deps` / `NewModule(d)` / `Module.Register(mux, prefix)` | 组合 `api` + `storage` |
+| `editor/web/` | 规划位置：剪辑器独立 exe 模式下服务 `editor.html`（MVP 场景前端资源放在 `server/web/editor/` 里） | — |
+
+主程序在 `server/editor_wiring.go` 里以小适配器把 `service.ProbeVideo` / `job.Manager` / `service.GetFFmpeg*Path` 桥接到 `editor/ports` 的接口，`server.go` 装配时调用 `s.buildEditorModule()` 并 `Register(mux, "/api/editor")`。
+
+测试：
+
+| 文件 | 覆盖 |
+|------|------|
+| `editor/domain/project_test.go` | `NewProject`、`ProgramDuration`、`Validate` 各类不变量违反 |
+| `editor/domain/timeline_test.go` | `Split` / `DeleteClip` / `Reorder` / `TrimLeft` / `TrimRight` 正反路径、不改原 slice |
+| `editor/domain/export_test.go` | 多 clip / 无音轨 / 各种缺参的 `BuildExportArgs` |
+| `editor/storage/jsonrepo_test.go` | roundtrip、删除后再 Get、按更新时间排序、索引损坏后重建 |
+
+## 4. `service/`
 
 **职责**：业务层门面，对 `server` 屏蔽底层 `embedded` 细节。
 
-### 3.1 `ffmpeg.go`
+### 4.1 `ffmpeg.go`
 
 | 函数 | 行为 |
 |------|------|
@@ -135,7 +146,7 @@ HTTP handler 已经按功能拆分到 3 个文件，职责如下：
 | `Prepare() error` | 触发 `embedded.GetFFmpegBinary()` 解压；供 `main.go` 在 goroutine 里预热 |
 | `GetFFmpegDir() (string, error)` | 返回 ffmpeg 所在目录（用于"在文件管理器打开"功能） |
 
-### 3.2 `probe.go` — ffprobe 封装
+### 4.2 `probe.go` — ffprobe 封装
 
 统一类型（便于复用）：
 
@@ -154,11 +165,11 @@ HTTP handler 已经按功能拆分到 3 个文件，职责如下：
 | `runFFprobe(path, extra...) []byte` | 内部 helper；`procutil.HideWindow` 防 Windows 弹黑窗 |
 | `parseRational(candidates...)` | 把 ffprobe 的 `"30000/1001"` 这类 rational 串转 float（按顺序 fallback） |
 
-## 4. `internal/embedded/`
+## 5. `internal/embedded/`
 
 **职责**：平台相关二进制嵌入 + 首次启动解压 + 进度追踪。
 
-### 4.1 平台分片（构建标签）
+### 5.1 平台分片（构建标签）
 
 | 文件 | 构建标签 | 嵌入 |
 |------|----------|------|
@@ -168,7 +179,7 @@ HTTP handler 已经按功能拆分到 3 个文件，职责如下：
 
 每个文件只导出三个符号：`archiveData []byte`、`ffmpegBinaryName`、`ffprobeBinaryName`。
 
-### 4.2 `common.go` — 公共逻辑
+### 5.2 `common.go` — 公共逻辑
 
 | 符号 | 说明 |
 |------|------|
@@ -185,7 +196,7 @@ HTTP handler 已经按功能拆分到 3 个文件，职责如下：
 | `progressWriter` | 包装 `io.Writer`，在每次 `Write` 更新全局 doneBytes/percent |
 | `startProgressPrinter()` | 返回可 `Stop()` 的控制台进度条渲染器（每 200ms `\r` 重绘） |
 
-### 4.3 解压流程
+### 5.3 解压流程
 
 ```
 ensureExtracted:
@@ -213,11 +224,11 @@ ensureExtracted:
   print "解压完成 (%.1fs)"
 ```
 
-## 5. `internal/job/`
+## 6. `internal/job/`
 
 **职责**：FFmpeg 任务状态管理 + 事件广播。
 
-### 5.1 `manager.go`
+### 6.1 `manager.go`
 
 | 符号 | 说明 |
 |------|------|
@@ -231,7 +242,7 @@ ensureExtracted:
 | `pump(cmd, stderr)` | 核心：scanner + 进度行节流 + 广播 + Wait + 最终事件 |
 | `broadcast(ev)` | 遍历订阅者，**非阻塞**发送（`select default`） |
 
-### 5.2 进度行节流（`pump` 内）
+### 6.2 进度行节流（`pump` 内）
 
 ```
 lastEmit := 零值 time.Time
@@ -255,15 +266,15 @@ if pendingProgress != "":
     broadcast(...)
 ```
 
-### 5.3 自定义 scanner splitter
+### 6.3 自定义 scanner splitter
 
 `scanLinesOrCR` 同时在 `\r` 和 `\n` 处切分。这是必须的：FFmpeg 每次刷新进度写的是 `\r`（覆盖同一行），标准 `bufio.ScanLines` 只识别 `\n` 会导致所有进度在一整段累积，直到程序结束才吐出来。
 
-### 5.4 子进程窗口抑制
+### 6.4 子进程窗口抑制
 
-`job.Manager.Start` 在 `exec.Command` 后立刻调 `procutil.HideWindow(cmd)`（见 §6.5）。Windows 下会设 `CREATE_NO_WINDOW` 标志位，防止每次转码/探测都弹黑色控制台；其他平台是空 no-op。同一 helper 被 `service.probe.go` 的 `runFFprobe` 复用。
+`job.Manager.Start` 在 `exec.Command` 后立刻调 `procutil.HideWindow(cmd)`（见 §7）。Windows 下会设 `CREATE_NO_WINDOW` 标志位，防止每次转码/探测都弹黑色控制台；其他平台是空 no-op。同一 helper 被 `service.probe.go` 的 `runFFprobe` 复用。
 
-## 6. `internal/procutil/`
+## 7. `internal/procutil/`
 
 **职责**：抽出 `job` 与 `service/probe` 共用的子进程跨平台适配。避免在两个包里各维护一份 `hide_*.go`。
 
@@ -272,7 +283,7 @@ if pendingProgress != "":
 | `hide_windows.go` | `//go:build windows`  | `HideWindow(cmd *exec.Cmd)` 设置 `CREATE_NO_WINDOW` |
 | `hide_other.go`   | `//go:build !windows` | `HideWindow` no-op |
 
-## 7. `internal/browser/`
+## 8. `internal/browser/`
 
 **职责**：跨平台打开 URL 或本地路径。
 
@@ -290,7 +301,7 @@ func Open(url string) error {
 
 对 URL 和本地路径都适用（`start` 会派给 URL handler 或 Explorer，取决于参数形式）。
 
-## 8. `config/`
+## 9. `config/`
 
 **职责**：用户偏好持久化。
 
@@ -303,7 +314,7 @@ func Open(url string) error {
 
 纯文本单行。后续要加更多配置项可以升级为单个 JSON/TOML。
 
-## 9. 根级文件与 `tools/`
+## 10. 根级文件与 `tools/`
 
 | 文件 | 作用 |
 |------|------|
@@ -314,7 +325,7 @@ func Open(url string) error {
 | `tools/download_windows.go` | 历史：从 gyan.dev 下载 Windows FFmpeg；当前已被 7z 嵌入方案取代，保留为参考 |
 | `assets/icon.svg` / `icon.icns` | 品牌图标源文件 |
 
-## 10. 依赖清单（go.mod 间接 + 直接）
+## 11. 依赖清单（go.mod 间接 + 直接）
 
 | 依赖 | 用途 |
 |------|------|

@@ -16,12 +16,20 @@
 │  - handlers.go       convert     │ │   · GetFFmpegPath         │
 │  - handlers_audio.go audio probe │ │   · GetFFprobePath        │
 │                      start/cancel│◀│   · Prepare               │
-│  - handlers_trim.go  trim probe  │ │   · CheckFFmpeg           │
-│                      start/cancel│ │   · GetFFmpegDir          │
-│  - audio_args.go     命令构建纯函数│ │  probe.go                │
-│  - trim_args.go      命令构建纯函数│ │   · ProbeAudio           │
-│  - web/              静态资源    │ │   · ProbeVideo            │
-└──────────┬───────────────────────┘ └────────────┬─────────────┘
+│  - audio_args.go     命令构建纯函数│ │   · CheckFFmpeg           │
+│  - editor_wiring.go  适配器装配  │ │   · GetFFmpegDir          │
+│  - web/ + web/editor/ 静态资源    │ │  probe.go                │
+└──────────┬───────────────────────┘ │   · ProbeAudio / Video   │
+           │                         └────────────┬─────────────┘
+           ▼                                      │
+┌──────────────────────────────────┐              │
+│  editor/  (剪辑器模块, SOLID)     │              │
+│  - domain/     纯业务类型+函数    │              │
+│  - ports/      DIP 接口           │              │
+│  - storage/    JSONRepo (工程持久化)│             │
+│  - api/        HTTP handlers     │              │
+│  - module.go   对外入口 NewModule │◀─── 适配器注入 service / job
+└──────────┬───────────────────────┘              │
            │                                      │
            ▼                                      ▼
 ┌──────────────────────────┐     ┌──────────────────────────┐
@@ -37,7 +45,7 @@
 └──────────────────────────┘ └──────────────────────────┘ └──────────────────────────┘
 ```
 
-依赖方向严格自上而下：`cmd → server, service → embedded, job, browser, procutil, config`。禁止反向依赖。`procutil` 被 `job` 和 `service/probe.go` 共用。
+依赖方向严格自上而下：`cmd → server, service → embedded, job, browser, procutil, config`。`editor` 子包内部也严格单向：`api → ports ← storage → domain`。`server` 通过 `editor_wiring.go` 适配具体实现为 `editor/ports` 接口，`editor/` 对主程序其余部分完全无感。
 
 ## 2. 目录结构
 
@@ -48,18 +56,36 @@ easy-ffmpeg/
 │   ├── icon.ico                      Windows 图标（rsrc 生成 .syso 时引用）
 │   └── rsrc_windows.syso             Windows 资源文件（图标）
 ├── server/
-│   ├── server.go                     路由、日志中间件、生命周期
+│   ├── server.go                     路由、日志中间件、生命周期；装配 editor.Module
 │   ├── handlers.go                   convert + 共享 fs/config/ffmpeg 接口
 │   ├── handlers_audio.go             audio probe / start / cancel
-│   ├── handlers_trim.go              trim probe / start / cancel
 │   ├── audio_args.go                 纯函数：AudioRequest → ffmpeg args
 │   ├── audio_args_test.go            表驱动测试
-│   ├── trim_args.go                  纯函数：TrimRequest → ffmpeg args
-│   ├── trim_args_test.go             表驱动测试
+│   ├── editor_wiring.go              把 service.* / job.Manager 适配成 editor/ports 接口
 │   └── web/                          go:embed 打包的静态前端
 │       ├── index.html
 │       ├── app.css
-│       └── app.js                    模块化 IIFE（见 ui-design.md §7）
+│       ├── app.js                    模块化 IIFE（见 ui-design.md §7）
+│       └── editor/                   剪辑器前端资源
+│           ├── editor.css
+│           └── editor.js             EditorApi / EditorStore / Preview / Timeline / ...
+├── editor/                           剪辑器模块（可单独提取为独立 exe）
+│   ├── module.go                     对外入口：Deps + NewModule + Module.Register
+│   ├── domain/                       纯业务层：Project / Clip / Timeline / Export
+│   │   ├── project.go                Project/Source/Clip/ExportSettings + Validate
+│   │   ├── timeline.go               Split/Delete/Reorder/TrimLeft/TrimRight
+│   │   ├── export.go                 BuildExportArgs → ffmpeg filter_complex
+│   │   └── *_test.go                 表驱动测试（90%+ 覆盖）
+│   ├── ports/                        DIP 接口：repository/prober/runner/paths/clock
+│   ├── storage/                      ports.ProjectRepository 的 JSON 实现
+│   │   ├── jsonrepo.go               原子写 + 索引 + 损坏自愈
+│   │   └── jsonrepo_test.go
+│   └── api/                          HTTP handlers（只依赖 ports + domain）
+│       ├── handlers_projects.go      CRUD
+│       ├── handlers_probe.go         probe 代理
+│       ├── handlers_export.go        export start / cancel
+│       ├── handlers_source.go        <video> 源文件 HTTP Range 服务
+│       ├── dto.go / http_util.go / routes.go
 ├── service/
 │   ├── ffmpeg.go                     ffmpeg/ffprobe 路径 + 版本 + 预热
 │   └── probe.go                      ProbeAudio / ProbeVideo，封装 ffprobe JSON
@@ -129,20 +155,20 @@ T=0.3s   UI 就绪
 
 ## 5. 核心数据流：一次任务
 
-convert / audio / trim 三个 Tab 都走同一条数据流，只是 `/api/*/start` 端点和命令构建器不同。
+convert / audio / editor 三个 Tab 都走同一条数据流，只是起点端点和命令构建器不同。
 `jobs.Manager` 全局唯一 —— 同一时刻只有一个任务在跑。
 
 ```
-用户填表单 → 点击"开始 …"
+用户填表单 / 完成剪辑 → 点击"开始 …"
     │
     ▼
-POST /api/{convert|audio|trim}/start { 对应的请求体 }
+POST /api/{convert|audio}/start  或  /api/editor/export
     │
     ▼
 对应构建器 → []string{"-y","-i",...}
-  · buildFFmpegArgs     (convert)
-  · BuildAudioArgs      (audio，含 merge 的临时列表文件 cleanup)
-  · BuildTrimArgs       (trim，trim/crop/scale 可组合)
+  · buildFFmpegArgs          (convert)
+  · BuildAudioArgs           (audio，含 merge 的临时列表文件 cleanup)
+  · editor.domain.BuildExportArgs  (editor，filter_complex trim+concat)
     │
     ▼
 jobs.Start(ffmpegPath, args)
@@ -177,7 +203,7 @@ handlers.handleConvertStream
         └─ type=state：同步 running 状态
 
 取消：
-POST /api/{convert|audio|trim}/cancel
+POST /api/{convert|audio}/cancel  或  /api/editor/export/cancel
     → jobs.Cancel() → cmd.Process.Kill()
     → pump 的 cmd.Wait() 返回 → 广播 cancelled 事件
 ```

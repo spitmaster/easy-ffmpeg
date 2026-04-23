@@ -11,7 +11,8 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 | [module-design.md](module-design.md) | 模块设计：各包职责与关键函数 |
 | [feature-design.md](feature-design.md) | 功能设计：已实现/待实现功能的交互与实现 |
 | [audio-feature-design.md](audio-feature-design.md) | 音频处理功能专项设计：三种模式、API、命令构建规则 |
-| [trim-feature-design.md](trim-feature-design.md) | 视频裁剪功能专项设计：时间/空间/分辨率三组开关、API、命令构建规则 |
+| [editor-feature-design.md](editor-feature-design.md) | 视频剪辑器 PRD：单视频时间轴剪辑、工程持久化、导出规则 |
+| [editor-module-design.md](editor-module-design.md) | 视频剪辑器模块架构：SOLID 分层、接口契约、独立编译路径 |
 | [ui-design.md](ui-design.md) | UI 设计：HTML/CSS/JS 结构、自定义样式、交互细节 |
 | [build-and-deploy.md](build-and-deploy.md) | 构建与部署：7z 嵌入机制、跨平台编译、首次启动解压 |
 | [roadmap.md](roadmap.md) | 路线图：功能迭代计划与技术债务 |
@@ -30,8 +31,11 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 - **产物大小**：Windows 35MB · macOS 27MB · Linux 29MB（原始非压缩方案曾为 350MB+）
 - **已实现**：
   - 视频转换（格式 / 编解码 / 容器）
-  - 视频裁剪（时间 / 空间 / 分辨率三组可组合；详见 [trim-feature-design.md](trim-feature-design.md)）
   - 音频处理（格式转换 / 从视频提取 / 合并 三模式；详见 [audio-feature-design.md](audio-feature-design.md)）
+  - 视频剪辑器 MVP —— 时间轴式单视频剪辑，**视频轨 / 音频轨独立编辑**（split / 删除 / 重排可分轨），工程持久化到 `~/.easy-ffmpeg/projects/`（每工程一个 JSON，SchemaVersion 2），filter_complex 双轨独立 concat 导出；详见 [editor-feature-design.md](editor-feature-design.md) + [editor-module-design.md](editor-module-design.md)
   - 全局：ffprobe 探测、SSE 日志、取消、首次解压进度、目录记忆、退出按钮
 - **占位未实现**：媒体信息、设置
-- **已覆盖测试**：`server/audio_args_test.go` + `server/trim_args_test.go`（表驱动，纯函数命令构建器）
+- **已覆盖测试**：
+  - `server/audio_args_test.go` —— 音频命令构建器
+  - `editor/domain/*_test.go` —— Project / Timeline / Export 纯函数
+  - `editor/storage/jsonrepo_test.go` —— JSON 仓库 roundtrip + 索引自愈

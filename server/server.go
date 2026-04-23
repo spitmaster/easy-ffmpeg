@@ -68,10 +68,16 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/audio/probe", s.handleAudioProbe)
 	mux.HandleFunc("/api/audio/start", s.handleAudioStart)
 	mux.HandleFunc("/api/audio/cancel", s.handleAudioCancel)
-	mux.HandleFunc("/api/trim/probe", s.handleTrimProbe)
-	mux.HandleFunc("/api/trim/start", s.handleTrimStart)
-	mux.HandleFunc("/api/trim/cancel", s.handleTrimCancel)
 	mux.HandleFunc("/api/quit", s.handleQuit)
+
+	// Video editor module — registers /api/editor/* routes.
+	// Failure here is non-fatal: the rest of the app keeps working.
+	if mod, dataDir, err := s.buildEditorModule(); err != nil {
+		log.Printf("editor: disabled (%v)", err)
+	} else {
+		mod.Register(mux, "/api/editor")
+		log.Printf("editor: mounted at /api/editor (data: %s)", dataDir)
+	}
 }
 
 // Listen binds to the given host:port and returns the actual address.

@@ -1,0 +1,335 @@
+/* =========================================================================
+   Editor Tab styles
+   Scoped under #panel-editor so it can't leak into other tabs.
+   ========================================================================= */
+
+#panel-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* ---- 顶栏 -------------------------------------------------------------- */
+
+.editor-topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.editor-project-name {
+  flex: 1;
+  min-width: 120px;
+  max-width: 360px;
+  font-size: 14px;
+}
+
+.editor-project-name.dirty::after { content: " *"; }
+
+/* ---- 空态 -------------------------------------------------------------- */
+
+.editor-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+  padding: 48px 16px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+.editor-empty-title { font-size: 18px; color: var(--text); }
+.editor-empty-hint  { font-size: 13px; }
+
+/* ---- 工作区整体布局 ---------------------------------------------------- */
+
+.editor-workspace {
+  flex: 1;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* ---- 预览 -------------------------------------------------------------- */
+
+.editor-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0b0b;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  min-height: 220px;
+}
+.editor-preview video {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+
+/* ---- 播控 -------------------------------------------------------------- */
+
+.editor-playbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.editor-timecode {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 200px;
+}
+.editor-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.editor-volume input[type="range"] { width: 90px; accent-color: var(--accent); }
+
+/* ---- 时间轴 ------------------------------------------------------------
+   Two-column layout:
+     [ labels column (fixed 90px) ] [ scroll column (flex, overflow-x) ]
+   Each row in the labels column aligns 1:1 with ruler / video / audio in
+   the scroll column.
+   ------------------------------------------------------------------------ */
+
+.editor-timeline {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  min-height: 140px;
+  overflow: hidden;
+}
+
+/* Labels column */
+
+.timeline-labels {
+  display: grid;
+  grid-template-rows: 22px 44px 32px;
+  background: #181c21;
+  border-right: 1px solid var(--border);
+}
+.timeline-label-ruler {
+  border-bottom: 1px solid var(--border);
+}
+.timeline-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.timeline-label.video { border-left: 2px solid #6b7681; }
+.timeline-label.audio { border-left: 2px solid #7a6a80; border-bottom: none; }
+
+/* Scroll column (holds ruler + two tracks + big playhead) */
+
+.timeline-scroll {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.timeline-ruler {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: col-resize;
+}
+.timeline-ruler .tick {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 1px;
+  background: #2a3038;
+}
+.timeline-ruler .tick-label {
+  position: absolute;
+  top: 3px;
+  transform: translateX(2px);
+  font-size: 10px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.timeline-track {
+  position: relative;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+}
+.timeline-track:last-child { border-bottom: none; }
+.timeline-track.timeline-audio { height: 32px; background: #161a1e; }
+
+/* ---- Clip blocks (muted greys, track-tinted border) ------------------- */
+
+.clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  background: #3b424a;
+  border: 1px solid #525a64;
+  border-radius: 3px;
+  cursor: grab;
+  overflow: hidden;
+  user-select: none;
+  box-sizing: border-box;
+  transition: background 0.08s, border-color 0.08s;
+}
+.clip:hover { background: #444b54; }
+.clip.selected {
+  background: #515b66;
+  border-color: #8892a0;
+  box-shadow: 0 0 0 1px rgba(220, 230, 245, 0.35);
+}
+.clip:active { cursor: grabbing; }
+
+.timeline-video .clip { border-left-width: 2px; border-left-color: #7b8591; }
+.timeline-audio .clip { border-left-width: 2px; border-left-color: #8a7a94; background: #353b42; }
+.timeline-audio .clip:hover { background: #3c434b; }
+
+.clip-label {
+  position: absolute;
+  left: 6px; right: 6px;
+  top: 50%; transform: translateY(-50%);
+  font-size: 11px;
+  color: #d4d8de;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.clip-handle {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  background: transparent;
+}
+.clip-handle:hover { background: rgba(220, 230, 245, 0.18); }
+.clip-handle.left  { left: 0; }
+.clip-handle.right { right: 0; }
+
+/* ---- Playheads -------------------------------------------------------- */
+
+/* Small single-track playhead — lives inside one track */
+.timeline-playhead-single {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  background: #d46a6a;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Big playhead — spans ruler + both tracks */
+.timeline-playhead-big {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #d46a6a;
+  pointer-events: none;
+  z-index: 3;
+}
+.timeline-playhead-big::before {
+  content: "";
+  position: absolute;
+  top: -2px; left: -5px;
+  width: 12px; height: 12px;
+  background: #d46a6a;
+  transform: rotate(45deg);
+  border-radius: 2px;
+}
+
+/* ---- Cursor-following ghost (rendered on document.body during drag) ---- */
+
+.clip-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  border-radius: 3px;
+  background: rgba(130, 140, 155, 0.55);
+  border: 1px solid rgba(210, 220, 235, 0.7);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.clip-ghost.ghost-audio { background: rgba(120, 130, 145, 0.55); }
+
+/* ---- 工具条 ------------------------------------------------------------ */
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.editor-zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.editor-zoom input[type="range"] { width: 120px; accent-color: var(--accent); }
+.editor-scope-label { font-size: 12px; margin-left: 6px; }
+
+/* ---- 剪辑记录模态框列表 ---------------------------------------------- */
+
+.editor-project-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.editor-project-list .row-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.editor-project-list .row-item:last-child { border-bottom: none; }
+.editor-project-list .row-item .info { flex: 1; min-width: 0; }
+.editor-project-list .row-item .title { font-weight: 600; color: var(--text); }
+.editor-project-list .row-item .meta  { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-project-list .row-item .actions { display: flex; gap: 6px; }
+.editor-project-empty { padding: 24px; text-align: center; }
+
+/* ---- 导出进度浮层 ------------------------------------------------------ */
+
+.editor-export-status {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.editor-export-status .log { max-height: 200px; }

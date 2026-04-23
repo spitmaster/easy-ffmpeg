@@ -5,7 +5,7 @@
 | Tab | 状态 | 说明 |
 |-----|------|------|
 | 视频转换 | ✅ 已实现 | 核心功能，格式 / 编解码转换 |
-| 视频裁剪 | ✅ 已实现 | 时间 / 空间 / 分辨率三组可组合（详见 [trim-feature-design.md](trim-feature-design.md)） |
+| 视频剪辑 | ✅ 已实现 (MVP) | 时间轴式单视频剪辑器，替代旧裁剪功能（详见 [editor-feature-design.md](editor-feature-design.md) + [editor-module-design.md](editor-module-design.md)） |
 | 音频处理 | ✅ 已实现 | 三模式：格式转换 / 从视频提取 / 合并（详见 [audio-feature-design.md](audio-feature-design.md)） |
 | 媒体信息 | 🚧 占位 | 同上；已经嵌入 ffprobe 为未来做准备 |
 | 设置 | 🚧 占位 | 同上 |

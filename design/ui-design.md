@@ -16,7 +16,7 @@
 ┌──────────────────────────────────────────────────────────────┐
 │  🎬  Easy FFmpeg                 FFmpeg 8.1 · 嵌入    退出    │  ← topbar
 ├──────────────────────────────────────────────────────────────┤
-│  [视频转换][视频裁剪][音频处理][媒体信息*][设置*]             │  ← tabs (*disabled)
+│  [视频转换][音频处理][视频剪辑][媒体信息*][设置*]             │  ← tabs (*disabled)
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │                  主要内容区域（按 active tab 切换 panel）      │
@@ -26,7 +26,7 @@
 
 - Header 固定顶部、tabs 紧随其后、main 区域自然流式（CSS flex column）。
 - Tab 切换由 `Tabs` IIFE 负责：点击 `.tab` → 给对应 `[data-tab]` 加 `.active`，并把所有 `.panel` 按 id 是否匹配切换 `.hidden`。
-- 已启用 Tab：视频转换 / 视频裁剪 / 音频处理；占位 disabled：媒体信息 / 设置。
+- 已启用 Tab：视频转换 / 音频处理 / 视频剪辑；占位 disabled：媒体信息 / 设置。
 
 ## 3. Tab 布局
 
@@ -66,33 +66,33 @@
 └────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 视频裁剪 Tab（trim）
+### 3.3 视频剪辑 Tab（editor）
 
-单一表单，三组独立 `<div class="trim-block">`（各带一个启用 checkbox）；启用后才能编辑字段。参见 [trim-feature-design.md](trim-feature-design.md)。
+时间轴式单视频剪辑器（取代旧的"视频裁剪"）。详细设计见 [editor-feature-design.md](editor-feature-design.md) + [editor-module-design.md](editor-module-design.md)。
 
 ```
-┌─ 视频裁剪 Tab ──────────────────────────────────────────┐
-│ 输入视频                                                │
-│ [选择文件] <path>                                       │
-│ 📊 01:23:45 · 1920×1080 · h264 · 29.97 fps              │
-│                                                         │
-│ ┌─ ☐ 时间裁剪 ─────────────────────────────────────┐   │
-│ │  起始 [00:00:00]   结束 [01:23:45]               │   │
-│ └───────────────────────────────────────────────────┘   │
-│ ┌─ ☐ 空间裁剪 ─────────────────────────────────────┐   │
-│ │  X Y 宽 高 + 提示                                 │   │
-│ └───────────────────────────────────────────────────┘   │
-│ ┌─ ☐ 分辨率缩放 ───────────────────────────────────┐   │
-│ │  预设下拉 / 保持比例 / 宽高                       │   │
-│ └───────────────────────────────────────────────────┘   │
-│                                                         │
-│ 输出目录 / 文件名                                        │
-│ 编码器 / 格式（copy 选项被刻意去掉）                    │
-│ 命令预览 / [开始裁剪][取消] / 日志                      │
-└─────────────────────────────────────────────────────────┘
+┌─ 视频剪辑 Tab ──────────────────────────────────────────────┐
+│ [📂 打开视频][📋 剪辑记录] <工程名>            [导出]      │ ← 顶栏
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│              ┌─────────────────────────┐                   │
+│              │      预览 <video>        │                   │
+│              └─────────────────────────┘                   │
+│  ⏮ ⏸/▶ ⏭   00:12.340 / 01:23.456        🔊 ━━●━━         │
+├────────────────────────────────────────────────────────────┤
+│ 0:00   0:15   0:30   0:45   1:00   1:15                   │ ← 时间刻度
+│ ┌─────┐ ┌─────────┐ ┌───────┐                             │ ← 视频轨
+│ │clip0│ │  clip1  │ │ clip2 │      ▼ (播放头)              │
+│ └─────┘ └─────────┘ └───────┘                             │
+│ ▂▂▂▂▂ ▂▂▂▂▂▂▂▂▂ ▂▂▂▂▂▂▂                                  │ ← 音频轨
+│                                                            │
+│ [✂ 分割][🗑 删除][↶撤销][↷重做]       缩放 [━━●━━]         │ ← 工具条
+└────────────────────────────────────────────────────────────┘
 ```
 
-> trim panel 因为内容较多，CSS 上单独开启 `overflow-y: auto`（`#panel-trim`），同时给末尾 `.field` 一个 `min-height: 240px; max-height: 340px` 的日志区固定范围，避免整页滚动时日志被压扁或吞掉其他字段。
+- **静态资源位置**：`server/web/editor/editor.css` + `server/web/editor/editor.js`（按 `<link>` / `<script>` 标签从主 `index.html` 引入），为未来剥离独立 exe 做铺垫。
+- **DOM 前缀**：所有元素 id 以 `ed` 开头（`edVideo`、`edRuler`、`edTimeline` 等），避免与其它 Tab 命名冲突。
+- **两个模态框**：`edProjectsBackdrop`（剪辑记录列表）+ `edExportBackdrop`（导出对话框）。
 
 ## 4. 配色系统
 
@@ -150,7 +150,7 @@
 
 - 黑底（`#000`）、白字（`#d4d4d4`）、等宽字体
 - `flex: 1 + min-height: 0 + overflow: auto`：在 convert / audio 两个 Tab 里自动填充剩余垂直空间
-- 在 trim Tab 里被父级 `#panel-trim > .field:last-child` 约束为 `min 240px / max 340px`（因为 trim 内容比较多，整页已开 `overflow: auto`）
+- 在视频剪辑 Tab 用 `.editor-export-status .log { max-height: 200px }` 约束高度，保证导出期间顶部的预览 / 时间轴仍可见
 - 子元素 `.log-line` 可加修饰类：
   - `.progress`（暖黄）→ FFmpeg 进度行
   - `.success`（绿色）→ "✓ 完成"
@@ -206,13 +206,16 @@
 行内 flex 容器，盛三个 `.seg` 按钮；活动按钮有 `.active` 类（surface-2 背景 + 主色文字）。
 `.seg:disabled` 半透明 + not-allowed。
 
-### 6.8 `.trim-block`（视频裁剪 Tab 三段可独立启用的字段组）
+### 6.8 `.editor-*`（视频剪辑 Tab 专用组件）
 
-`<div class="trim-block">` 通过 `data-enabled="true|false"` 属性驱动：
-- 启用：边框变主色
-- 未启用：`.trim-block-body` opacity 降到 0.45 + `pointer-events: none`，避免误操作
+样式集中在 `editor/editor.css`，用 `#panel-editor` 前缀避免泄漏到其它 Tab：
 
-legend 里的 checkbox 用 JS 来切换 `data-enabled`（而不是原生 `<fieldset disabled>`，因为那样 checkbox 自己也会被一起 disable）。
+- `.editor-topbar` / `.editor-empty` / `.editor-workspace`：整体布局
+- `.editor-preview` video + `.editor-playbar`：预览窗与播控
+- `.editor-timeline`：时间轴容器（`.timeline-ruler` + `.timeline-track` × 2 + `.timeline-playhead`）
+- `.clip` + `.clip-handle`：时间轴上的片段与拖拽手柄，`.clip.selected` 表示选中状态
+- `.editor-project-list .row-item`：剪辑记录列表条目
+- `.editor-export-status`：导出日志浮层（仅有工程后显示）
 
 ### 6.9 `.merge-list`（音频合并 Tab 的可排序文件列表）
 
@@ -230,7 +233,7 @@ legend 里的 checkbox 用 JS 来切换 `data-enabled`（而不是原生 `<field
 | `Http` | helper | `fetchJSON(url, opts)` / `postJSON(url, body)` |
 | `Fmt` | helper | `human(size)` 人类可读字节 |
 | `Path` | helper | `join` / `basename` / `dirname` / `stripExt` |
-| `Time` | helper | `HH:MM:SS[.mmm]` 严格解析与格式化（供 TrimTab） |
+| `Time` | helper | `HH:MM:SS[.mmm]` 严格解析与格式化（供 EditorTab 等复用） |
 | `Dirs` | IIFE | 输入 / 输出目录缓存与持久化（`/api/config/dirs`） |
 | `FFmpegStatus` | IIFE | 顶栏版本 chip 加载与点击跳转缓存目录 |
 | `Picker` | IIFE | 共享的文件 / 目录选择模态框（mode=file\|dir，Promise 风格） |
@@ -240,7 +243,12 @@ legend 里的 checkbox 用 JS 来切换 `data-enabled`（而不是原生 `<field
 | `AudioCodecs` | IIFE | 共享的容器/编码器/码率知识，供三种音频模式复用（DRY）|
 | `AudioConvertMode` / `AudioExtractMode` / `AudioMergeMode` | IIFE | 音频三种模式各自的字段组与命令预览 |
 | `AudioTab` | IIFE | 挂载三模式 + segmented 切换 + 调用 `createJobPanel` |
-| `TrimTab` | IIFE | 视频裁剪三段开关 + probe 自动填充 + 命令预览 |
+| `EditorApi` / `EditorStore` / `History` / `TL` | IIFE | 剪辑器数据层：fetch wrappers、单一状态源 + 自动保存、撤销/重做栈、节目/源时间换算 |
+| `Preview` | IIFE | `<video>` 封装 + 节目时间↔源时间映射、跨 clip 连播、seek |
+| `Timeline` | IIFE | 时间轴 DOM 渲染 + 拖拽交互（分割/删除/重排/修剪） |
+| `ProjectsModal` | IIFE | 剪辑记录模态框（列表 / 打开 / 删除） |
+| `ExportModal` | IIFE | 导出对话框 + 复用 `createJobPanel` 走 SSE |
+| `EditorTab` | IIFE | 顶层：绑定 DOM、键盘快捷键、调度 render；这些子模块都在 `editor/editor.js` 里，与主 `app.js` 分文件 |
 | `Tabs` | IIFE | 点击 `.tab` 切换 `.panel` 的显隐 |
 | `Quit` | IIFE | 右上角退出按钮 |
 | `Prepare` | IIFE | 首次启动解压轮询与遮罩 |
@@ -253,9 +261,9 @@ legend 里的 checkbox 用 JS 来切换 `data-enabled`（而不是原生 `<field
   FFmpegStatus.init();       // 版本 chip
   await Dirs.load();         // 预取目录配置
   Picker.init();             // 挂载 picker 模态框事件
-  ConvertTab.init();         // 三个 Tab 初始化顺序无依赖
+  ConvertTab.init();         // Tab 初始化顺序无依赖
   AudioTab.init();
-  TrimTab.init();
+  if (typeof EditorTab !== "undefined") EditorTab.init();  // editor.js 在 app.js 之后加载
   Tabs.init();               // 绑定 tab 切换
   Quit.init();
   JobBus.connect();          // 开 SSE，事件开始流入所有 panel
@@ -321,12 +329,13 @@ async function wait() {
 - **从视频提取** 在选完输入后自动 ffprobe 音轨；单音轨时下拉隐藏
 - **合并** 列表里每项展示 codec · 声道 · kbps · 时长；↑↓ 排序，🗑 移除；添加按钮触发 Picker
 
-### 8.3 视频裁剪 Tab
-- **选完输入视频** 自动 ffprobe：状态行展示时长×分辨率×编码×fps；同时填充 trim.end、crop 源矩形、scale 源预设
-- **三个启用开关**：勾上后对应块 `data-enabled="true"`，边框转主色、字段可编辑；关掉则整块灰
-- **分辨率预设** 切换自动填宽高；手动改宽高 → 预设回到"自定义"
-- **保持比例**：若勾上且某一维留空，发给后端时 → `-2`（ffmpeg 等比并自动对齐偶数）
-- **视频编码器不含 copy**（前端刻意省掉）；后端也兜底拒绝
+### 8.3 视频剪辑 Tab
+- **打开视频** → `POST /api/editor/projects` 自动 probe 填 source 元数据、生成整段为一 clip 的默认工程、保存到 `~/.easy-ffmpeg/projects/`
+- **EditorStore 单一状态源**：UI 所有改动走 `commit(patch)` / `set(patch)`；`commit` 标 `dirty=true` + 1.5s debounce 自动 `PUT`
+- **时间轴交互**：点击空白 seek；点击 clip 选中；边缘拖拽修剪；中央拖拽改顺序（不允许重叠）；`S` 分割，`Del` 删除
+- **撤销/重做**：每次可感知改动（拖拽松开后）push 到 `History` 栈；`Ctrl+Z` / `Ctrl+Y`
+- **预览**：单 `<video>` 放原始文件，按节目时间映射到源时间；跨 clip 边界时自动 seek 到下一 clip 的 `sourceStart`
+- **导出**：弹对话框选格式/编码/输出目录 → `flushSave` 后 `POST /api/editor/export` → 共享 `createJobPanel` + SSE
 
 ### 8.4 所有 Tab 共用
 - **日志自动滚动到底部**：`requestAnimationFrame` 后设 `scrollTop = scrollHeight`
@@ -350,5 +359,5 @@ async function wait() {
 
 - **字体**：用的是 system-ui 堆栈 `-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif`。在部分 Linux 发行版上可能 fallback 到难看的 DejaVu Sans。
 - **模态框尺寸在小屏**：760px 固定宽，移动端会溢出 `max-width: 90vw`。移动端 UX 未认真设计。
-- **trim Tab 在矮屏**：整页 `overflow: auto` 代替了日志 flex 填充，日志被限制在 240-340px。窄屏用户可能觉得偏局促——后续可加"全屏日志"按钮。
+- **编辑 Tab 在矮屏**：时间轴高度固定 140px，预览用 `minmax(0, 1fr)` 弹性占用；窄屏下预览会变得较小，后续可加"预览全屏"按钮。
 - **merge 排序手势**：目前只用 ↑/↓ 按钮，没做拖拽排序。列表很长时效率偏低。
