@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "PowerShell($json = Invoke-RestMethod -Uri \"https://go.dev/dl/?mode=json\" -UseBasicParsing; $latest = $json[0]; $latest.version; \\($latest.files | Where-Object { $_.os -eq \"windows\" -and $_.arch -eq \"amd64\" -and $_.kind -eq \"installer\" }\\) | Format-List filename, size, sha256)",
+      "PowerShell($url = \"https://go.dev/dl/go1.26.2.windows-amd64.msi\"; $dst = \"$env:USERPROFILE\\\\Downloads\\\\go1.26.2.windows-amd64.msi\"; $expectedSha = \"84826eca833548bb2beabe7429052eaaec18faa902fde723898d906b42e59a73\"; $ProgressPreference = \"SilentlyContinue\"; Write-Output \"Downloading to: $dst\"; $sw = [System.Diagnostics.Stopwatch]::StartNew\\(\\); Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing; $sw.Stop\\(\\); $size = \\(Get-Item $dst\\).Length; Write-Output \\(\"Done in {0:N1}s, size={1:N0} bytes \\({2:N2} MB\\)\" -f $sw.Elapsed.TotalSeconds, $size, \\($size/1MB\\)\\); $actualSha = \\(Get-FileHash -Path $dst -Algorithm SHA256\\).Hash.ToLower\\(\\); if \\($actualSha -eq $expectedSha\\) { Write-Output \"SHA256 OK: $actualSha\" } else { Write-Output \"SHA256 MISMATCH\"; Write-Output \"expected: $expectedSha\"; Write-Output \"actual:   $actualSha\" })"
+    ]
+  }
+}
