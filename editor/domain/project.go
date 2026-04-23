@@ -15,7 +15,10 @@ import (
 // v1: single Clips []Clip covering both video and audio together
 // v2: split into VideoClips + AudioClips so each track is independently
 //     edited (split / trim / reorder / delete).
-const SchemaVersion = 2
+// v3: Clip gains ProgramStart — clips now have an explicit position on the
+//     track instead of being stacked in array order, enabling gaps and
+//     free placement. Migration auto-fills ProgramStart by accumulation.
+const SchemaVersion = 3
 
 // Track identifiers used across domain, api, and UI layers.
 const (
@@ -53,17 +56,21 @@ type Source struct {
 	HasAudio   bool    `json:"hasAudio"`
 }
 
-// Clip is a sub-range of the source, placed on its track in the order of
-// the enclosing slice. Position on the program timeline is implicit:
-// clip i starts at the sum of the durations of clips 0..i-1.
+// Clip is a sub-range of the source positioned on its track at ProgramStart.
+// Clips no longer need to be contiguous — gaps between clips are preserved
+// and render as black video / silent audio on export.
 type Clip struct {
-	ID          string  `json:"id"`
-	SourceStart float64 `json:"sourceStart"` // seconds, inclusive
-	SourceEnd   float64 `json:"sourceEnd"`   // seconds, exclusive
+	ID           string  `json:"id"`
+	SourceStart  float64 `json:"sourceStart"`  // seconds into the source, inclusive
+	SourceEnd    float64 `json:"sourceEnd"`    // seconds into the source, exclusive
+	ProgramStart float64 `json:"programStart"` // seconds on the track timeline
 }
 
-// Duration returns the clip's duration in seconds.
+// Duration returns the clip's duration in seconds (on both source and track).
 func (c Clip) Duration() float64 { return c.SourceEnd - c.SourceStart }
+
+// ProgramEnd returns the clip's track end time.
+func (c Clip) ProgramEnd() float64 { return c.ProgramStart + c.Duration() }
 
 // ExportSettings carry the user's export preferences. Persisted alongside
 // the project so next export starts with the same choices.
@@ -75,13 +82,17 @@ type ExportSettings struct {
 	OutputName string `json:"outputName"`
 }
 
-// trackDuration sums clip durations for one track.
+// trackDuration returns the track's program length: the largest ProgramEnd
+// across its clips. A track with a single clip at ProgramStart=5 lasting 10s
+// is 15s long (not 10s) — the leading gap counts.
 func trackDuration(clips []Clip) float64 {
-	var total float64
+	var max float64
 	for _, c := range clips {
-		total += c.Duration()
+		if e := c.ProgramEnd(); e > max {
+			max = e
+		}
 	}
-	return total
+	return max
 }
 
 // VideoDuration / AudioDuration give the program length of each track in
@@ -138,6 +149,9 @@ func validateClips(clips []Clip, label string, sourceDuration float64) []error {
 		if sourceDuration > 0 && c.SourceEnd > sourceDuration+1e-6 {
 			errs = append(errs, fmt.Errorf("%s[%d]: sourceEnd > source.duration", label, i))
 		}
+		if c.ProgramStart < 0 {
+			errs = append(errs, fmt.Errorf("%s[%d]: programStart < 0", label, i))
+		}
 	}
 	return errs
 }
@@ -154,7 +168,7 @@ func NewProject(id, name string, src Source, now time.Time) *Project {
 		UpdatedAt:     now,
 		Source:        src,
 		VideoClips: []Clip{
-			{ID: "v1", SourceStart: 0, SourceEnd: src.Duration},
+			{ID: "v1", SourceStart: 0, SourceEnd: src.Duration, ProgramStart: 0},
 		},
 		Export: ExportSettings{
 			Format:     "mp4",
@@ -165,7 +179,7 @@ func NewProject(id, name string, src Source, now time.Time) *Project {
 	}
 	if src.HasAudio {
 		p.AudioClips = []Clip{
-			{ID: "a1", SourceStart: 0, SourceEnd: src.Duration},
+			{ID: "a1", SourceStart: 0, SourceEnd: src.Duration, ProgramStart: 0},
 		}
 	}
 	return p
@@ -178,11 +192,15 @@ func NewProject(id, name string, src Source, now time.Time) *Project {
 // duplicated into both VideoClips and AudioClips (if the source has
 // audio). Audio clip ids are derived by prefixing "a" so both tracks
 // stay unique if later merged.
+//
+// v2 → v3: Clip.ProgramStart is filled in by accumulation from 0, so old
+// stacked-clip projects render identically to before.
 func (p *Project) Migrate() {
 	if p.SchemaVersion >= SchemaVersion {
 		p.LegacyClips = nil
 		return
 	}
+	// v1 → v2 shape: move legacy Clips into VideoClips/AudioClips.
 	if len(p.VideoClips) == 0 && len(p.LegacyClips) > 0 {
 		p.VideoClips = append([]Clip(nil), p.LegacyClips...)
 		if p.Source.HasAudio && len(p.AudioClips) == 0 {
@@ -197,5 +215,29 @@ func (p *Project) Migrate() {
 		}
 	}
 	p.LegacyClips = nil
+	// v2 → v3: fill ProgramStart by accumulation so old projects look the
+	// same on the timeline. We trust any nonzero ProgramStart already there
+	// (a belt-and-braces move: a half-migrated file won't be clobbered).
+	fillProgramStarts(p.VideoClips)
+	fillProgramStarts(p.AudioClips)
 	p.SchemaVersion = SchemaVersion
+}
+
+func fillProgramStarts(clips []Clip) {
+	if len(clips) == 0 {
+		return
+	}
+	// If any clip already has a nonzero ProgramStart, assume the file has
+	// already been through the v3 migration (or the user explicitly placed
+	// gaps) and leave everything alone.
+	for _, c := range clips {
+		if c.ProgramStart > 0 {
+			return
+		}
+	}
+	var acc float64
+	for i := range clips {
+		clips[i].ProgramStart = acc
+		acc += clips[i].Duration()
+	}
 }

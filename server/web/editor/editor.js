@@ -36,34 +36,51 @@ const EditorApi = (() => {
 // ============================================================
 
 const TL = (() => {
+  function clipDur(c)     { return c.sourceEnd - c.sourceStart; }
+  function clipProgEnd(c) { return c.programStart + clipDur(c); }
+
+  // Find which clip occupies program time t. Returns { i, src } or null when
+  // t falls in a gap between clips (or past the end).
   function programToSource(clips, t) {
-    let acc = 0;
+    if (!clips) return null;
     for (let i = 0; i < clips.length; i++) {
-      const len = clips[i].sourceEnd - clips[i].sourceStart;
-      if (t < acc + len) return { i, src: clips[i].sourceStart + (t - acc) };
-      acc += len;
+      const c = clips[i];
+      if (t >= c.programStart && t < clipProgEnd(c)) {
+        return { i, src: c.sourceStart + (t - c.programStart) };
+      }
     }
     return null;
   }
-  function clipProgramStart(clips, i) {
-    let acc = 0;
-    for (let k = 0; k < i; k++) acc += clips[k].sourceEnd - clips[k].sourceStart;
-    return acc;
-  }
+  // Duration of one track = largest program-end across its clips.
+  // A leading gap counts toward this length.
   function programDuration(clips) {
-    if (!clips) return 0;
-    return clips.reduce((a, c) => a + (c.sourceEnd - c.sourceStart), 0);
+    if (!clips || !clips.length) return 0;
+    let max = 0;
+    for (const c of clips) {
+      const e = clipProgEnd(c);
+      if (e > max) max = e;
+    }
+    return max;
   }
   function genClipId(track) {
     const p = track === TRACK_AUDIO ? "a" : "v";
     return p + Math.random().toString(36).slice(2, 6);
   }
-  // total program length = max of the two tracks
   function totalDuration(project) {
     if (!project) return 0;
     return Math.max(programDuration(project.videoClips), programDuration(project.audioClips));
   }
-  return { programToSource, clipProgramStart, programDuration, genClipId, totalDuration };
+  // Nearest clip boundary on a track (used for ⏮/⏭ and potentially snaps).
+  function collectBoundaries(clips) {
+    const xs = [0];
+    if (!clips) return xs;
+    for (const c of clips) {
+      xs.push(c.programStart);
+      xs.push(clipProgEnd(c));
+    }
+    return Array.from(new Set(xs)).sort((a, b) => a - b);
+  }
+  return { programToSource, programDuration, genClipId, totalDuration, clipDur, clipProgEnd, collectBoundaries };
 })();
 
 // ============================================================
@@ -215,6 +232,12 @@ const Preview = (() => {
 
   function init(videoEl) {
     video = videoEl;
+    // Default unmuted + full volume. Without this, Chrome's autoplay policy
+    // may silently mute the element on first programmatic play() — even when
+    // the call is triggered by a user click, if it happens before metadata
+    // is ready.
+    video.muted = false;
+    video.volume = 1;
     video.addEventListener("timeupdate", onSourceTimeUpdate);
     video.addEventListener("ended", () => EditorStore.set({ playing: false }));
     video.addEventListener("loadedmetadata", () => {
@@ -237,6 +260,9 @@ const Preview = (() => {
     const st = EditorStore.get();
     if (!st.project || !video) return;
     if (video.paused) {
+      // Explicitly re-assert unmuted state every play() — defends against
+      // any stray code path that might have set muted=true.
+      video.muted = false;
       applySourceForProgramTime(st.playhead);
       video.play().catch(() => {}).then(() => EditorStore.set({ playing: true }));
     }
@@ -266,11 +292,8 @@ const Preview = (() => {
   function seekToClipStart(direction) {
     const st = EditorStore.get();
     if (!st.project) return;
-    const clips = st.project.videoClips || [];
+    const boundaries = TL.collectBoundaries(st.project.videoClips);
     const cur = st.playhead;
-    const boundaries = [0];
-    let acc = 0;
-    for (const c of clips) { acc += c.sourceEnd - c.sourceStart; boundaries.push(acc); }
     if (direction < 0) {
       for (let k = boundaries.length - 1; k >= 0; k--) {
         if (boundaries[k] < cur - 0.05) { seek(boundaries[k]); return; }
@@ -284,12 +307,14 @@ const Preview = (() => {
 
   function applySourceForProgramTime(t) {
     const st = EditorStore.get();
-    const clips = st.project && st.project.videoClips;
-    if (!clips || !clips.length || !video) return;
+    const clips = (st.project && st.project.videoClips) || [];
+    if (!video) return;
     const pos = TL.programToSource(clips, t);
     if (!pos) {
-      const last = clips[clips.length - 1];
-      if (video.readyState > 0) video.currentTime = last.sourceEnd - 0.01;
+      // Program time is in a gap (or past the end) — pause and leave the
+      // last decoded frame visible. Playback resumes when the user seeks
+      // back into a clip.
+      activeIndex = -1;
       pause();
       return;
     }
@@ -301,27 +326,30 @@ const Preview = (() => {
 
   function onSourceTimeUpdate() {
     const st = EditorStore.get();
-    const clips = st.project && st.project.videoClips;
-    if (!clips || !clips.length || !video || activeIndex < 0) return;
+    const clips = (st.project && st.project.videoClips) || [];
+    if (!clips.length || !video || activeIndex < 0) return;
     const c = clips[activeIndex];
     if (!c) return;
 
+    // Reached the end of the current clip — find where to jump next.
     if (video.currentTime >= c.sourceEnd - 0.01) {
-      const next = activeIndex + 1;
-      if (next >= clips.length) {
+      // Sort clips by programStart so "next" is defined in time-order, not
+      // array-order. Gaps and out-of-order arrays are both possible now.
+      const sorted = clips.slice().sort((a, b) => a.programStart - b.programStart);
+      const curIdx = sorted.findIndex(x => x.id === c.id);
+      const nextClip = sorted[curIdx + 1];
+      if (!nextClip) {
         pause();
         EditorStore.set({ playhead: TL.programDuration(clips) });
         return;
       }
-      activeIndex = next;
-      video.currentTime = clips[next].sourceStart;
-      const newProgram = TL.clipProgramStart(clips, next);
-      EditorStore.set({ playhead: newProgram });
+      activeIndex = clips.findIndex(x => x.id === nextClip.id);
+      video.currentTime = nextClip.sourceStart;
+      EditorStore.set({ playhead: nextClip.programStart });
       return;
     }
-    const programStart = TL.clipProgramStart(clips, activeIndex);
     const delta = video.currentTime - c.sourceStart;
-    EditorStore.set({ playhead: programStart + Math.max(0, delta) });
+    EditorStore.set({ playhead: c.programStart + Math.max(0, delta) });
   }
 
   return { init, loadProject, play, pause, toggle, seek, seekToClipStart };
@@ -338,13 +366,65 @@ const Preview = (() => {
 
 const Timeline = (() => {
   let els = null;
-  let ghost = null;
+
+  const PX_MIN = 0.5;
+  const PX_MAX = 80;
 
   function init(refs) {
     els = refs;
     els.ruler.addEventListener("mousedown", onRulerMouseDown);
     els.videoTrack.addEventListener("mousedown", (e) => onTrackMouseDown(e, TRACK_VIDEO));
     els.audioTrack.addEventListener("mousedown", (e) => onTrackMouseDown(e, TRACK_AUDIO));
+    if (els.scroll) els.scroll.addEventListener("wheel", onWheel, { passive: false });
+  }
+
+  // Fit-to-width: pick the largest pxPerSecond that shows the whole program
+  // inside the visible scroll width (clamped to the slider's range).
+  function fitPxPerSecond(project) {
+    if (!els || !els.scroll) return 8;
+    const total = TL.totalDuration(project);
+    if (total <= 0) return 8;
+    const viewW = Math.max(100, els.scroll.clientWidth - 24);
+    return Math.max(PX_MIN, Math.min(PX_MAX, viewW / total));
+  }
+
+  // Ctrl+Wheel zooms around the cursor; plain wheel scrolls horizontally.
+  // We swap deltaY → scrollLeft because timelines have no vertical overflow,
+  // so a bare mouse wheel would otherwise do nothing useful.
+  function onWheel(ev) {
+    if (ev.ctrlKey || ev.metaKey) {
+      ev.preventDefault();
+      const st = EditorStore.get();
+      if (!st.project) return;
+      const rect = els.scroll.getBoundingClientRect();
+      const anchorX = ev.clientX - rect.left + els.scroll.scrollLeft;
+      const anchorTime = anchorX / st.pxPerSecond;
+      // Exponential zoom — constant ratio per wheel notch feels smoother
+      // than linear across a wide (0.5–80 px/s) range.
+      const factor = Math.exp(-ev.deltaY * 0.0015);
+      const next = Math.max(PX_MIN, Math.min(PX_MAX, st.pxPerSecond * factor));
+      EditorStore.set({ pxPerSecond: next });
+      syncZoomSlider(next);
+      // Keep the time under the cursor stationary on screen after zoom.
+      const newAnchorX = anchorTime * next;
+      els.scroll.scrollLeft = newAnchorX - (ev.clientX - rect.left);
+    } else if (ev.deltaY !== 0 && ev.deltaX === 0) {
+      // Plain wheel → horizontal scroll (only if the browser isn't already
+      // sending a horizontal event, e.g. from a trackpad with two-finger pan).
+      ev.preventDefault();
+      els.scroll.scrollLeft += ev.deltaY;
+    }
+  }
+
+  function syncZoomSlider(px) {
+    if (els && els.zoom) els.zoom.value = String(px);
+  }
+
+  // Exposed so EditorTab.loadProject can set the initial fit.
+  function applyFit(project) {
+    const px = fitPxPerSecond(project);
+    EditorStore.set({ pxPerSecond: px });
+    syncZoomSlider(px);
   }
 
   function render(state) {
@@ -399,13 +479,14 @@ const Timeline = (() => {
     if (!state.project) return;
     const ppS = state.pxPerSecond;
     const clips = (trackId === TRACK_VIDEO ? state.project.videoClips : state.project.audioClips) || [];
-    let x = 0;
     clips.forEach((c, i) => {
-      const w = (c.sourceEnd - c.sourceStart) * ppS;
+      const w = TL.clipDur(c) * ppS;
       const el = document.createElement("div");
       el.className = "clip";
       if (Sel.has(state.selection, trackId, c.id)) el.classList.add("selected");
-      el.style.left = x + "px";
+      // Clips are now positioned absolutely by their ProgramStart, not by
+      // accumulating earlier clips' widths — this is what lets gaps exist.
+      el.style.left = (c.programStart * ppS) + "px";
       el.style.width = Math.max(8, w) + "px";
       el.dataset.clipId = c.id;
       el.dataset.clipIndex = String(i);
@@ -416,7 +497,6 @@ const Timeline = (() => {
         <div class="clip-handle right" data-handle="right"></div>
       `;
       trackEl.appendChild(el);
-      x += w;
     });
   }
 
@@ -472,6 +552,11 @@ const Timeline = (() => {
   }
 
   // ---- Trim drag (one clip's start or end) ------------------------------
+  //
+  // Left trim: SourceStart moves; ProgramStart moves by the same delta so
+  //   the clip's right edge on the track stays put (intuitive — the handle
+  //   under the cursor is the one moving).
+  // Right trim: only SourceEnd moves; ProgramStart does not change.
 
   function startTrimDrag(ev, trackId, clipId, side) {
     ev.preventDefault();
@@ -483,6 +568,7 @@ const Timeline = (() => {
     if (idx < 0) return;
     const ppS = state.pxPerSecond;
     const startX = ev.clientX;
+    const origClip = Object.assign({}, original[idx]);
 
     function onMove(e) {
       const dx = e.clientX - startX;
@@ -490,11 +576,13 @@ const Timeline = (() => {
       const clips = original.map(c => Object.assign({}, c));
       const c = clips[idx];
       if (side === "left") {
-        const newStart = Math.max(0, Math.min(c.sourceEnd - 0.05, c.sourceStart + ds));
+        const newStart = Math.max(0, Math.min(origClip.sourceEnd - 0.05, origClip.sourceStart + ds));
+        const delta = newStart - origClip.sourceStart;
         c.sourceStart = newStart;
+        c.programStart = Math.max(0, origClip.programStart + delta);
       } else {
-        const maxEnd = (project.source && project.source.duration) ? project.source.duration : c.sourceEnd + 600;
-        const newEnd = Math.max(c.sourceStart + 0.05, Math.min(maxEnd, c.sourceEnd + ds));
+        const maxEnd = (project.source && project.source.duration) ? project.source.duration : origClip.sourceEnd + 600;
+        const newEnd = Math.max(origClip.sourceStart + 0.05, Math.min(maxEnd, origClip.sourceEnd + ds));
         c.sourceEnd = newEnd;
       }
       EditorStore.commit({ [clipsKey]: clips }, { save: false });
@@ -509,7 +597,15 @@ const Timeline = (() => {
     document.addEventListener("mouseup", onUp);
   }
 
-  // ---- Reorder drag (with cursor-following ghost) -----------------------
+  // ---- Position drag (free placement + magnetic snap) -------------------
+  //
+  // Gaps are first-class now: a clip can be dragged to any ProgramStart >= 0,
+  // including positions that leave a hole before it or between it and its
+  // neighbours. As the drag crosses within SNAP_PX of another clip's edge
+  // (or time 0 / the playhead), it snaps to that point so the user can
+  // butt clips up against each other without sub-pixel fiddling.
+
+  const SNAP_PX = 8;
 
   function startReorderDrag(ev, trackId, clipId) {
     ev.preventDefault();
@@ -517,82 +613,67 @@ const Timeline = (() => {
     const project = state.project;
     const clipsKey = trackClipsKey(trackId);
     const original = (project[clipsKey] || []).map(c => Object.assign({}, c));
-    const fromIdx = original.findIndex(c => c.id === clipId);
-    if (fromIdx < 0) return;
+    const idx = original.findIndex(c => c.id === clipId);
+    if (idx < 0) return;
     const ppS = state.pxPerSecond;
-    const clipWidth = (original[fromIdx].sourceEnd - original[fromIdx].sourceStart) * ppS;
     const startX = ev.clientX;
-    const startY = ev.clientY;
-    const grabbedRect = ev.currentTarget.getBoundingClientRect();
-    const grabOffsetX = ev.clientX - grabbedRect.left;
-    let lastTargetIdx = fromIdx;
-    let ghostBorn = false;
+    const origProgramStart = original[idx].programStart;
+    const clipDur = TL.clipDur(original[idx]);
 
-    function createGhost() {
-      ghost = document.createElement("div");
-      ghost.className = "clip-ghost " + (trackId === TRACK_VIDEO ? "ghost-video" : "ghost-audio");
-      ghost.style.width = clipWidth + "px";
-      ghost.style.height = (trackId === TRACK_VIDEO ? 40 : 30) + "px";
-      document.body.appendChild(ghost);
-    }
-    function moveGhost(e) {
-      if (!ghost) return;
-      ghost.style.left = (e.clientX - grabOffsetX) + "px";
-      ghost.style.top  = (e.clientY - 16) + "px";
+    // Snap anchors = all OTHER clip edges on the same track + playhead + 0.
+    // We exclude the dragged clip's own edges so it never magnetises to
+    // its own start position.
+    const snapPoints = [0, state.playhead];
+    original.forEach((c, i) => {
+      if (i === idx) return;
+      snapPoints.push(c.programStart);
+      snapPoints.push(c.programStart + TL.clipDur(c));
+    });
+
+    function snapToNearest(candidateStart) {
+      const candidateEnd = candidateStart + clipDur;
+      const snapSec = SNAP_PX / ppS;
+      let bestDelta = Infinity;
+      let bestStart = candidateStart;
+      for (const p of snapPoints) {
+        // Try aligning either the left or the right edge of the clip to
+        // each anchor. Whichever is closest wins.
+        const dL = Math.abs(candidateStart - p);
+        if (dL < bestDelta && dL <= snapSec) { bestDelta = dL; bestStart = p; }
+        const dR = Math.abs(candidateEnd - p);
+        if (dR < bestDelta && dR <= snapSec) { bestDelta = dR; bestStart = p - clipDur; }
+      }
+      return Math.max(0, bestStart);
     }
 
     function onMove(e) {
-      // Start ghost after the pointer moves a few pixels so a simple click
-      // doesn't leave a ghost behind.
-      if (!ghostBorn && (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3)) {
-        createGhost();
-        ghostBorn = true;
-      }
-      if (ghostBorn) moveGhost(e);
-
       const dx = e.clientX - startX;
-      const originalStart = TL.clipProgramStart(original, fromIdx);
-      const centerProgram = originalStart + (clipWidth / 2) / ppS + dx / ppS;
-      let acc = 0;
-      let targetIdx = 0;
-      for (let i = 0; i < original.length; i++) {
-        const d = original[i].sourceEnd - original[i].sourceStart;
-        const mid = acc + d / 2;
-        if (centerProgram < mid) { targetIdx = i; break; }
-        targetIdx = i + 1;
-        acc += d;
-      }
-      if (targetIdx > fromIdx) targetIdx--;
-      targetIdx = Math.max(0, Math.min(original.length - 1, targetIdx));
-      if (targetIdx !== lastTargetIdx) {
-        lastTargetIdx = targetIdx;
-        const reordered = reorderArray(original, fromIdx, targetIdx);
-        EditorStore.commit({ [clipsKey]: reordered }, { save: false });
-      }
+      const raw = Math.max(0, origProgramStart + dx / ppS);
+      const snapped = snapToNearest(raw);
+      const clips = original.map(c => Object.assign({}, c));
+      clips[idx].programStart = snapped;
+      EditorStore.commit({ [clipsKey]: clips }, { save: false });
     }
     function onUp() {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      if (ghost) { ghost.remove(); ghost = null; }
-      History.push(EditorStore.get().project);
+      // Only snapshot if the clip actually moved — a plain click shouldn't
+      // pollute the undo stack.
+      const finalClip = (EditorStore.get().project[clipsKey] || []).find(c => c.id === clipId);
+      if (finalClip && Math.abs(finalClip.programStart - origProgramStart) > 1e-6) {
+        History.push(EditorStore.get().project);
+      }
       EditorStore.commit({}, { save: true });
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }
 
-  function reorderArray(arr, from, to) {
-    const out = arr.slice();
-    const [c] = out.splice(from, 1);
-    out.splice(to, 0, c);
-    return out;
-  }
-
   function trackClipsKey(trackId) {
     return trackId === TRACK_VIDEO ? "videoClips" : "audioClips";
   }
 
-  return { init, render };
+  return { init, render, applyFit };
 })();
 
 // ============================================================
@@ -605,12 +686,18 @@ const TimelineOps = (() => {
     const clips = project[key] || [];
     if (!clips.length) return null;
     const pos = TL.programToSource(clips, programTime);
-    if (!pos) return null;
+    if (!pos) return null; // split point in a gap → no-op
     const clip = clips[pos.i];
     if (pos.src - clip.sourceStart < 0.05 || clip.sourceEnd - pos.src < 0.05) return null;
     const next = clips.slice();
+    const leftDur = pos.src - clip.sourceStart;
+    // Left inherits the original ProgramStart; right starts where left ends.
     const left  = Object.assign({}, clip, { sourceEnd: pos.src });
-    const right = Object.assign({}, clip, { id: TL.genClipId(trackId), sourceStart: pos.src });
+    const right = Object.assign({}, clip, {
+      id: TL.genClipId(trackId),
+      sourceStart: pos.src,
+      programStart: clip.programStart + leftDur,
+    });
     next.splice(pos.i, 1, left, right);
     return { [key]: next };
   }
@@ -820,6 +907,7 @@ const EditorTab = (() => {
       workspace:     $("edWorkspace"),
       video:         $("edVideo"),
       ruler:         $("edRuler"),
+      scroll:        $("edTimelineScroll"),
       videoTrack:    $("edVideoTrack"),
       audioTrack:    $("edAudioTrack"),
       playheadBig:   $("edPlayheadBig"),
@@ -869,7 +957,7 @@ const EditorTab = (() => {
     refs.deleteBtn.addEventListener("click", TimelineOps.deleteSelection);
     refs.undoBtn.addEventListener("click", TimelineOps.undo);
     refs.redoBtn.addEventListener("click", TimelineOps.redo);
-    refs.zoom.addEventListener("input", () => EditorStore.set({ pxPerSecond: parseInt(refs.zoom.value, 10) }));
+    refs.zoom.addEventListener("input", () => EditorStore.set({ pxPerSecond: parseFloat(refs.zoom.value) }));
 
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
@@ -936,6 +1024,9 @@ const EditorTab = (() => {
     EditorStore.set({ project, selection: [], playhead: 0, playing: false, dirty: false, splitScope: "both" });
     History.reset(project);
     Preview.loadProject(project);
+    // Fit-to-width must run after the workspace is visible, otherwise
+    // clientWidth reads as 0 and we'd pick the min zoom.
+    requestAnimationFrame(() => Timeline.applyFit(project));
   }
 
   function render(state) {

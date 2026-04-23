@@ -20,14 +20,14 @@ func equalClips(t *testing.T, got, want []Clip) {
 
 func TestSplit(t *testing.T) {
 	// One clip covering [0..20]. Program time t=10 lands at sourceTime 10.
-	in := []Clip{{ID: "c1", SourceStart: 0, SourceEnd: 20}}
+	in := []Clip{{ID: "c1", SourceStart: 0, SourceEnd: 20, ProgramStart: 0}}
 	got, err := Split(in, 10, "c2")
 	if err != nil {
 		t.Fatalf("Split error: %v", err)
 	}
 	equalClips(t, got, []Clip{
-		{ID: "c1", SourceStart: 0, SourceEnd: 10},
-		{ID: "c2", SourceStart: 10, SourceEnd: 20},
+		{ID: "c1", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+		{ID: "c2", SourceStart: 10, SourceEnd: 20, ProgramStart: 10},
 	})
 	// input unchanged
 	if in[0].SourceEnd != 20 {
@@ -38,22 +38,22 @@ func TestSplit(t *testing.T) {
 func TestSplitAcrossClips(t *testing.T) {
 	// Two clips stacked: program time 15 is inside clip[1] at sourceTime 15.
 	in := []Clip{
-		{ID: "a", SourceStart: 0, SourceEnd: 10},
-		{ID: "b", SourceStart: 10, SourceEnd: 30}, // program range [10..30]
+		{ID: "a", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+		{ID: "b", SourceStart: 10, SourceEnd: 30, ProgramStart: 10}, // program range [10..30]
 	}
 	got, err := Split(in, 15, "b2")
 	if err != nil {
 		t.Fatalf("Split error: %v", err)
 	}
 	equalClips(t, got, []Clip{
-		{ID: "a", SourceStart: 0, SourceEnd: 10},
-		{ID: "b", SourceStart: 10, SourceEnd: 15},
-		{ID: "b2", SourceStart: 15, SourceEnd: 30},
+		{ID: "a", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+		{ID: "b", SourceStart: 10, SourceEnd: 15, ProgramStart: 10},
+		{ID: "b2", SourceStart: 15, SourceEnd: 30, ProgramStart: 15},
 	})
 }
 
 func TestSplitErrors(t *testing.T) {
-	in := []Clip{{ID: "c1", SourceStart: 0, SourceEnd: 20}}
+	in := []Clip{{ID: "c1", SourceStart: 0, SourceEnd: 20, ProgramStart: 0}}
 	cases := []struct {
 		name  string
 		t     float64
@@ -80,17 +80,19 @@ func TestSplitErrors(t *testing.T) {
 
 func TestDeleteClip(t *testing.T) {
 	in := []Clip{
-		{ID: "a", SourceStart: 0, SourceEnd: 10},
-		{ID: "b", SourceStart: 10, SourceEnd: 20},
-		{ID: "c", SourceStart: 20, SourceEnd: 30},
+		{ID: "a", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+		{ID: "b", SourceStart: 10, SourceEnd: 20, ProgramStart: 10},
+		{ID: "c", SourceStart: 20, SourceEnd: 30, ProgramStart: 20},
 	}
 	got, err := DeleteClip(in, "b")
 	if err != nil {
 		t.Fatalf("DeleteClip: %v", err)
 	}
+	// The surviving clips keep their ProgramStart — deleting "b" leaves a
+	// gap at [10..20] rather than shifting "c" leftward.
 	equalClips(t, got, []Clip{
-		{ID: "a", SourceStart: 0, SourceEnd: 10},
-		{ID: "c", SourceStart: 20, SourceEnd: 30},
+		{ID: "a", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+		{ID: "c", SourceStart: 20, SourceEnd: 30, ProgramStart: 20},
 	})
 	// unchanged input
 	if len(in) != 3 {
@@ -137,13 +139,18 @@ func TestReorder(t *testing.T) {
 }
 
 func TestTrimLeft(t *testing.T) {
-	in := []Clip{{ID: "a", SourceStart: 5, SourceEnd: 20}}
+	in := []Clip{{ID: "a", SourceStart: 5, SourceEnd: 20, ProgramStart: 7}}
 	got, err := TrimLeft(in, "a", 8)
 	if err != nil {
 		t.Fatalf("TrimLeft: %v", err)
 	}
 	if got[0].SourceStart != 8 || got[0].SourceEnd != 20 {
 		t.Errorf("got %v", got[0])
+	}
+	// ProgramStart moves by the same delta as SourceStart so the clip's
+	// right edge stays put on the track.
+	if got[0].ProgramStart != 10 {
+		t.Errorf("ProgramStart = %v, want 10", got[0].ProgramStart)
 	}
 	if in[0].SourceStart != 5 {
 		t.Error("input mutated")
@@ -161,7 +168,7 @@ func TestTrimLeft(t *testing.T) {
 }
 
 func TestTrimRight(t *testing.T) {
-	in := []Clip{{ID: "a", SourceStart: 5, SourceEnd: 20}}
+	in := []Clip{{ID: "a", SourceStart: 5, SourceEnd: 20, ProgramStart: 7}}
 	got, err := TrimRight(in, "a", 15)
 	if err != nil {
 		t.Fatalf("TrimRight: %v", err)
@@ -169,8 +176,52 @@ func TestTrimRight(t *testing.T) {
 	if got[0].SourceEnd != 15 {
 		t.Errorf("got end %v", got[0].SourceEnd)
 	}
+	if got[0].ProgramStart != 7 {
+		t.Errorf("ProgramStart must not move on right-trim, got %v", got[0].ProgramStart)
+	}
 	// end <= start
 	if _, err := TrimRight(in, "a", 5); err == nil {
 		t.Error("end = start should error")
+	}
+}
+
+func TestSetProgramStart(t *testing.T) {
+	in := []Clip{
+		{ID: "a", SourceStart: 0, SourceEnd: 5, ProgramStart: 0},
+		{ID: "b", SourceStart: 0, SourceEnd: 5, ProgramStart: 5},
+	}
+	got, err := SetProgramStart(in, "b", 20)
+	if err != nil {
+		t.Fatalf("SetProgramStart: %v", err)
+	}
+	if got[1].ProgramStart != 20 {
+		t.Errorf("got %v, want 20", got[1].ProgramStart)
+	}
+	// negative is clamped to 0
+	got, _ = SetProgramStart(in, "b", -5)
+	if got[1].ProgramStart != 0 {
+		t.Errorf("negative should clamp to 0, got %v", got[1].ProgramStart)
+	}
+	// input unchanged
+	if in[1].ProgramStart != 5 {
+		t.Error("input mutated")
+	}
+}
+
+func TestClipAtProgramTime_GapReturnsNotOk(t *testing.T) {
+	// A gap between two clips: t=12 is in the hole at [10..15).
+	clips := []Clip{
+		{ID: "a", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+		{ID: "b", SourceStart: 20, SourceEnd: 25, ProgramStart: 15},
+	}
+	if _, _, ok := clipAtProgramTime(clips, 12); ok {
+		t.Error("t=12 is in the gap, should return ok=false")
+	}
+	// And the boundaries still work.
+	if _, _, ok := clipAtProgramTime(clips, 5); !ok {
+		t.Error("t=5 inside first clip should be ok")
+	}
+	if _, _, ok := clipAtProgramTime(clips, 17); !ok {
+		t.Error("t=17 inside second clip should be ok")
 	}
 }

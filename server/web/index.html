@@ -376,7 +376,7 @@
             <div class="timeline-label audio">🔊 音频</div>
           </div>
           <!-- 右侧滚动区 -->
-          <div class="timeline-scroll">
+          <div class="timeline-scroll" id="edTimelineScroll">
             <div class="timeline-ruler" id="edRuler"></div>
             <div class="timeline-track timeline-video" id="edVideoTrack">
               <div class="timeline-playhead timeline-playhead-single" id="edPlayheadVideo" style="display:none"></div>
@@ -397,7 +397,7 @@
           <button class="btn" id="edRedo" title="重做 (Ctrl+Y)" disabled>↷ 重做</button>
           <span class="muted editor-scope-label" id="edSplitScopeLabel">当前分割范围：两轨一起</span>
           <div class="spacer"></div>
-          <label class="editor-zoom">缩放 <input type="range" id="edZoom" min="2" max="40" step="1" value="8"></label>
+          <label class="editor-zoom">缩放 <input type="range" id="edZoom" min="0.5" max="80" step="0.5" value="8" title="Ctrl+滚轮缩放，滚轮左右滚动"></label>
         </div>
       </div>
 

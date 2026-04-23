@@ -16,8 +16,8 @@ const snapEpsilon = 1e-6
 
 // Split divides the clip containing programTime into two clips at that
 // point on the program timeline. The second half gets the given newID.
-// Returns ErrClipNotFound if programTime is outside [0, total) or exactly
-// on a boundary (splitting at a boundary is a no-op by definition).
+// Returns ErrClipNotFound if programTime lands in a gap or is on a clip
+// boundary (splitting at a boundary would produce a zero-length clip).
 func Split(clips []Clip, programTime float64, newID string) ([]Clip, error) {
 	if newID == "" {
 		return nil, errors.New("newID is empty")
@@ -31,14 +31,14 @@ func Split(clips []Clip, programTime float64, newID string) ([]Clip, error) {
 	}
 	left := clips[idx]
 	if sourceAt-left.SourceStart < snapEpsilon || left.SourceEnd-sourceAt < snapEpsilon {
-		// Split is at a boundary: no-op would create a zero-length clip.
 		return nil, fmt.Errorf("split point on clip boundary")
 	}
+	leftDur := sourceAt - left.SourceStart
 	out := make([]Clip, 0, len(clips)+1)
 	out = append(out, clips[:idx]...)
 	out = append(out,
-		Clip{ID: left.ID, SourceStart: left.SourceStart, SourceEnd: sourceAt},
-		Clip{ID: newID, SourceStart: sourceAt, SourceEnd: left.SourceEnd},
+		Clip{ID: left.ID, SourceStart: left.SourceStart, SourceEnd: sourceAt, ProgramStart: left.ProgramStart},
+		Clip{ID: newID, SourceStart: sourceAt, SourceEnd: left.SourceEnd, ProgramStart: left.ProgramStart + leftDur},
 	)
 	out = append(out, clips[idx+1:]...)
 	return out, nil
@@ -77,7 +77,8 @@ func Reorder(clips []Clip, fromIdx, toIdx int) ([]Clip, error) {
 }
 
 // TrimLeft updates the clip's sourceStart. The new value must be >= 0 and
-// < current sourceEnd.
+// < current sourceEnd. ProgramStart moves by the same delta so the clip's
+// right edge on the track stays put — intuitive trim-handle behaviour.
 func TrimLeft(clips []Clip, id string, newSourceStart float64) ([]Clip, error) {
 	idx := indexOf(clips, id)
 	if idx < 0 {
@@ -90,7 +91,13 @@ func TrimLeft(clips []Clip, id string, newSourceStart float64) ([]Clip, error) {
 		return nil, fmt.Errorf("newSourceStart >= sourceEnd")
 	}
 	out := append([]Clip(nil), clips...)
+	delta := newSourceStart - out[idx].SourceStart
 	out[idx].SourceStart = newSourceStart
+	newProg := out[idx].ProgramStart + delta
+	if newProg < 0 {
+		newProg = 0
+	}
+	out[idx].ProgramStart = newProg
 	return out, nil
 }
 
@@ -120,15 +127,28 @@ func indexOf(clips []Clip, id string) int {
 
 // clipAtProgramTime locates the clip containing the given program time and
 // returns its index, the corresponding source time, and ok=true. Returns
-// ok=false when t is outside the total program range.
+// ok=false when t falls in a gap or outside the program range.
 func clipAtProgramTime(clips []Clip, t float64) (idx int, sourceAt float64, ok bool) {
-	var acc float64
 	for i, c := range clips {
-		d := c.Duration()
-		if t < acc+d {
-			return i, c.SourceStart + (t - acc), true
+		if t >= c.ProgramStart && t < c.ProgramEnd() {
+			return i, c.SourceStart + (t - c.ProgramStart), true
 		}
-		acc += d
 	}
 	return 0, 0, false
+}
+
+// SetProgramStart updates the on-track position of a clip. Callers use this
+// for drag-to-reposition; no overlap or ordering is enforced here — the UI
+// enforces its own constraints (snap, clamp ≥ 0, etc.).
+func SetProgramStart(clips []Clip, id string, newStart float64) ([]Clip, error) {
+	idx := indexOf(clips, id)
+	if idx < 0 {
+		return nil, ErrClipNotFound
+	}
+	if newStart < 0 {
+		newStart = 0
+	}
+	out := append([]Clip(nil), clips...)
+	out[idx].ProgramStart = newStart
+	return out, nil
 }

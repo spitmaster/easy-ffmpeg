@@ -280,6 +280,22 @@
 }
 .clip-ghost.ghost-audio { background: rgba(120, 130, 145, 0.55); }
 
+/* Gap indicator on the ruler — not strictly required visually (gaps already
+   show as empty track), but an extra hint helps when the user zooms out
+   far enough that clip edges blur together. */
+.timeline-gap-hint {
+  position: absolute;
+  top: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(200, 200, 200, 0.04),
+    rgba(200, 200, 200, 0.04) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  pointer-events: none;
+}
+
 /* ---- 工具条 ------------------------------------------------------------ */
 
 .editor-toolbar {
