@@ -218,59 +218,126 @@ const History = (() => {
 })();
 
 // ============================================================
-//  Preview：<video> + program↔source mapping
+//  Preview：separate <video> + <audio>, independent per-track playback.
 //
-//  Single <video> element. Preview follows the VIDEO track as the master:
-//  when the program time crosses a video-clip boundary, seek the video to
-//  the next clip's sourceStart. Independent audio edits are export-only —
-//  preview always uses the source's raw audio aligned to video time.
+//  The video element is muted and owns the picture; the audio element owns
+//  the sound. Both load the same source URL and are seek'd independently
+//  according to videoClips / audioClips respectively. The video element
+//  is the master clock — its timeupdate drives the program playhead, and
+//  the audio element is re-synced on every tick.
+//
+//  Why two elements instead of one <video> + WebAudio:
+//  — Cheapest way to get independent seeks on the same source
+//  — Browser handles decoding, range requests, buffering
+//  — The caller can't introduce clock drift between picture and sound
+//    beyond a few tens of ms, which is good enough for editing preview
 // ============================================================
 
 const Preview = (() => {
   let video = null;
-  let activeIndex = -1;
+  let audio = null;
+  let activeVideoIndex = -1;
+  let activeAudioIndex = -1;
+  let userVolume = 1;
 
-  function init(videoEl) {
+  function init(videoEl, audioEl) {
     video = videoEl;
-    // Default unmuted + full volume. Without this, Chrome's autoplay policy
-    // may silently mute the element on first programmatic play() — even when
-    // the call is triggered by a user click, if it happens before metadata
-    // is ready.
-    video.muted = false;
-    video.volume = 1;
-    video.addEventListener("timeupdate", onSourceTimeUpdate);
+    audio = audioEl;
+
+    // Video carries no sound — the <audio> element does. Keeping volume=0
+    // too is belt-and-braces against some browsers that interpret `muted`
+    // as "mute the track" but still play audible audio at low volume.
+    video.muted = true;
+    video.volume = 0;
+    if (audio) {
+      audio.muted = false;
+      audio.volume = userVolume;
+    }
+
+    video.addEventListener("timeupdate", onVideoTimeUpdate);
     video.addEventListener("ended", () => EditorStore.set({ playing: false }));
     video.addEventListener("loadedmetadata", () => {
       const st = EditorStore.get();
-      if (st.project) applySourceForProgramTime(st.playhead);
+      if (st.project) {
+        applyVideoFor(st.playhead);
+        applyAudioFor(st.playhead);
+      }
     });
+    video.addEventListener("error", () => {
+      console.error("[editor] video error:", video.error);
+    });
+    // Watchdog: if anything flips the video element off mute (stale HTML
+    // cache, browser sync on src change, user typing M in the OS key queue,
+    // etc.) slam it back. Sound must always come from the <audio> element.
+    video.addEventListener("volumechange", () => {
+      if (!video.muted || video.volume !== 0) {
+        video.muted = true;
+        video.volume = 0;
+      }
+    });
+
+    if (audio) {
+      audio.addEventListener("timeupdate", onAudioTimeUpdate);
+      audio.addEventListener("error", () => {
+        console.error("[editor] audio error:", audio.error);
+      });
+    }
+  }
+
+  // Exposed for the volume slider. Stored so subsequent loadProject() calls
+  // can reapply it to freshly-assigned elements.
+  function setVolume(v) {
+    userVolume = v;
+    if (audio) audio.volume = v;
+  }
+
+  function setMuted(m) {
+    if (audio) audio.muted = !!m;
+  }
+
+  function isMuted() {
+    return audio ? audio.muted : false;
+  }
+
+  function toggleMute() {
+    setMuted(!isMuted());
+    return isMuted();
   }
 
   function loadProject(project) {
     if (!project || !video) return;
     const url = EditorApi.sourceUrl(project.id);
-    if (video.src !== location.origin + url && video.src !== url) {
-      video.src = url;
-    }
-    activeIndex = -1;
+    if (!sameSrc(video, url)) video.src = url;
+    if (audio && !sameSrc(audio, url)) audio.src = url;
+    activeVideoIndex = -1;
+    activeAudioIndex = -1;
     seek(0);
+  }
+
+  function sameSrc(el, url) {
+    return el.src === url || el.src === location.origin + url;
   }
 
   function play() {
     const st = EditorStore.get();
     if (!st.project || !video) return;
-    if (video.paused) {
-      // Explicitly re-assert unmuted state every play() — defends against
-      // any stray code path that might have set muted=true.
-      video.muted = false;
-      applySourceForProgramTime(st.playhead);
-      video.play().catch(() => {}).then(() => EditorStore.set({ playing: true }));
+    video.muted = true;
+    if (audio) audio.muted = false;
+    applyVideoFor(st.playhead);
+    applyAudioFor(st.playhead);
+    const promises = [];
+    if (video.paused) promises.push(video.play().catch(() => {}));
+    // Audio may legitimately stay paused (gap on the audio track) — only
+    // start it if we have an active audio clip.
+    if (audio && audio.paused && activeAudioIndex >= 0) {
+      promises.push(audio.play().catch(() => {}));
     }
+    Promise.all(promises).then(() => EditorStore.set({ playing: true }));
   }
 
   function pause() {
-    if (!video) return;
-    video.pause();
+    if (video) video.pause();
+    if (audio) audio.pause();
     EditorStore.set({ playing: false });
   }
 
@@ -285,10 +352,11 @@ const Preview = (() => {
     const total = TL.totalDuration(st.project);
     const clamped = Math.max(0, Math.min(programTime, total));
     EditorStore.set({ playhead: clamped });
-    applySourceForProgramTime(clamped);
+    applyVideoFor(clamped);
+    applyAudioFor(clamped);
   }
 
-  // previous / next clip boundary on the video track
+  // Previous / next boundary on the video track (Arrow keys / ⏮ ⏭).
   function seekToClipStart(direction) {
     const st = EditorStore.get();
     if (!st.project) return;
@@ -305,36 +373,32 @@ const Preview = (() => {
     }
   }
 
-  function applySourceForProgramTime(t) {
-    const st = EditorStore.get();
-    const clips = (st.project && st.project.videoClips) || [];
+  // ---- video track ------------------------------------------------------
+
+  function applyVideoFor(t) {
     if (!video) return;
+    const clips = (EditorStore.get().project && EditorStore.get().project.videoClips) || [];
     const pos = TL.programToSource(clips, t);
     if (!pos) {
-      // Program time is in a gap (or past the end) — pause and leave the
-      // last decoded frame visible. Playback resumes when the user seeks
-      // back into a clip.
-      activeIndex = -1;
-      pause();
+      activeVideoIndex = -1;
+      if (!video.paused) video.pause();
       return;
     }
-    activeIndex = pos.i;
+    activeVideoIndex = pos.i;
     if (video.readyState > 0 && Math.abs(video.currentTime - pos.src) > 0.05) {
       video.currentTime = pos.src;
     }
   }
 
-  function onSourceTimeUpdate() {
+  function onVideoTimeUpdate() {
     const st = EditorStore.get();
     const clips = (st.project && st.project.videoClips) || [];
-    if (!clips.length || !video || activeIndex < 0) return;
-    const c = clips[activeIndex];
+    if (!clips.length || !video || activeVideoIndex < 0) return;
+    const c = clips[activeVideoIndex];
     if (!c) return;
 
-    // Reached the end of the current clip — find where to jump next.
+    // End of current video clip — jump to the next in time order.
     if (video.currentTime >= c.sourceEnd - 0.01) {
-      // Sort clips by programStart so "next" is defined in time-order, not
-      // array-order. Gaps and out-of-order arrays are both possible now.
       const sorted = clips.slice().sort((a, b) => a.programStart - b.programStart);
       const curIdx = sorted.findIndex(x => x.id === c.id);
       const nextClip = sorted[curIdx + 1];
@@ -343,16 +407,88 @@ const Preview = (() => {
         EditorStore.set({ playhead: TL.programDuration(clips) });
         return;
       }
-      activeIndex = clips.findIndex(x => x.id === nextClip.id);
+      activeVideoIndex = clips.findIndex(x => x.id === nextClip.id);
       video.currentTime = nextClip.sourceStart;
       EditorStore.set({ playhead: nextClip.programStart });
+      // Jumping ahead on the video clock may land the playhead inside a
+      // different audio clip — resync rather than rely on drift detection.
+      applyAudioFor(nextClip.programStart);
       return;
     }
+
     const delta = video.currentTime - c.sourceStart;
-    EditorStore.set({ playhead: c.programStart + Math.max(0, delta) });
+    const newPlayhead = c.programStart + Math.max(0, delta);
+    EditorStore.set({ playhead: newPlayhead });
+    keepAudioInSync(newPlayhead);
   }
 
-  return { init, loadProject, play, pause, toggle, seek, seekToClipStart };
+  // ---- audio track ------------------------------------------------------
+
+  function applyAudioFor(t) {
+    if (!audio) return;
+    const clips = (EditorStore.get().project && EditorStore.get().project.audioClips) || [];
+    const pos = TL.programToSource(clips, t);
+    if (!pos) {
+      // Audio gap (or track empty) — silence until next clip arrives.
+      activeAudioIndex = -1;
+      if (!audio.paused) audio.pause();
+      return;
+    }
+    activeAudioIndex = pos.i;
+    if (audio.readyState > 0 && Math.abs(audio.currentTime - pos.src) > 0.05) {
+      audio.currentTime = pos.src;
+    }
+    // Resume audio if we were playing but paused for a prior gap.
+    if (EditorStore.get().playing && audio.paused) {
+      audio.play().catch(() => {});
+    }
+  }
+
+  // Called from onVideoTimeUpdate to keep audio continuously aligned.
+  // Drift up to ~150ms is tolerated without hard-seeking, which would
+  // otherwise cause an audible click every 250ms (typical video timeupdate
+  // cadence in Chrome).
+  function keepAudioInSync(programTime) {
+    if (!audio) return;
+    const clips = (EditorStore.get().project && EditorStore.get().project.audioClips) || [];
+    const pos = TL.programToSource(clips, programTime);
+    if (!pos) {
+      if (activeAudioIndex !== -1 || !audio.paused) {
+        activeAudioIndex = -1;
+        if (!audio.paused) audio.pause();
+      }
+      return;
+    }
+    if (pos.i !== activeAudioIndex) {
+      // Crossed an audio clip boundary — hard seek into the new clip.
+      activeAudioIndex = pos.i;
+      if (audio.readyState > 0) audio.currentTime = pos.src;
+      if (EditorStore.get().playing && audio.paused) audio.play().catch(() => {});
+      return;
+    }
+    if (audio.readyState > 0 && Math.abs(audio.currentTime - pos.src) > 0.15) {
+      audio.currentTime = pos.src;
+    }
+    if (EditorStore.get().playing && audio.paused) {
+      audio.play().catch(() => {});
+    }
+  }
+
+  function onAudioTimeUpdate() {
+    // Audio is not the master clock — we only need this to detect the end
+    // of an audio clip early and skip to the next one, so the user doesn't
+    // briefly hear the last frames of audio that got trimmed out.
+    const st = EditorStore.get();
+    const clips = (st.project && st.project.audioClips) || [];
+    if (!clips.length || !audio || activeAudioIndex < 0) return;
+    const c = clips[activeAudioIndex];
+    if (!c) return;
+    if (audio.currentTime >= c.sourceEnd - 0.01) {
+      applyAudioFor(st.playhead);
+    }
+  }
+
+  return { init, loadProject, play, pause, toggle, seek, seekToClipStart, setVolume, setMuted, isMuted, toggleMute };
 })();
 
 // ============================================================
@@ -367,7 +503,11 @@ const Preview = (() => {
 const Timeline = (() => {
   let els = null;
 
-  const PX_MIN = 0.5;
+  // PX_MIN is deliberately tiny: with a 2h+ source and a 1000px viewport
+  // the fit value can legitimately reach ~0.14 px/s. Earlier we clamped at
+  // 0.5, which made the default-fit view of a long video unable to zoom
+  // out any further — user perceived it as "ticks collide, slider dead".
+  const PX_MIN = 0.05;
   const PX_MAX = 80;
 
   function init(refs) {
@@ -441,7 +581,12 @@ const Timeline = (() => {
     const total = TL.totalDuration(state.project);
     const ppS = state.pxPerSecond;
     const step = pickStep(ppS);
-    for (let t = 0; t <= total + 0.01; t += step) {
+    // Use a numeric loop counter (not float addition) so tiny FP errors
+    // don't compound into missing ticks at the end of long tracks.
+    const count = Math.floor(total / step) + 1;
+    for (let i = 0; i <= count; i++) {
+      const t = i * step;
+      if (t > total + 0.01) break;
       const x = t * ppS;
       const tick = document.createElement("div");
       tick.className = "tick";
@@ -450,7 +595,7 @@ const Timeline = (() => {
       const label = document.createElement("div");
       label.className = "tick-label";
       label.style.left = x + "px";
-      label.textContent = fmtShort(t);
+      label.textContent = fmtTick(t, step);
       els.ruler.appendChild(label);
     }
     const w = Math.max(total * ppS + 40, 400);
@@ -459,14 +604,39 @@ const Timeline = (() => {
     els.audioTrack.style.width = w + "px";
   }
 
+  // Pick a label step from the "nice number" ladder so adjacent labels are
+  // at least TARGET_PX apart. Using a ladder (vs e.g. step = ideal rounded
+  // to 1 sig fig) keeps the ticks at human-friendly values — 0.2, 0.5, 1,
+  // 2, 5… — which read much better than 0.23s or 1.7s.
+  const STEPS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
+  // Target spacing between ticks. Labels at ≥1h look like "1:30:00" (~48px)
+  // so 90px keeps at least ~40px of breathing room between adjacent labels.
+  const TARGET_PX = 90;
+
   function pickStep(ppS) {
-    if (ppS <= 3)   return 30;
-    if (ppS <= 6)   return 15;
-    if (ppS <= 12)  return 10;
-    if (ppS <= 20)  return 5;
-    return 1;
+    const ideal = TARGET_PX / ppS;
+    for (const s of STEPS) if (s >= ideal) return s;
+    return STEPS[STEPS.length - 1];
   }
 
+  // Format a ruler label at the current step granularity. Sub-second steps
+  // show decimals; ≥1h tracks gain an hour field.
+  function fmtTick(sec, step) {
+    const decimals = step >= 1 ? 0 : (step >= 0.1 ? 1 : 2);
+    if (sec >= 3600) {
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = (sec % 60).toFixed(decimals);
+      const pad = decimals > 0 ? decimals + 3 : 2;
+      return `${h}:${String(m).padStart(2, "0")}:${s.padStart(pad, "0")}`;
+    }
+    const m = Math.floor(sec / 60);
+    const s = (sec % 60).toFixed(decimals);
+    const pad = decimals > 0 ? decimals + 3 : 2;
+    return `${m}:${s.padStart(pad, "0")}`;
+  }
+
+  // Short mm:ss for clip badges — always integer seconds, step-agnostic.
   function fmtShort(sec) {
     const s = Math.round(sec);
     const m = Math.floor(s / 60);
@@ -906,6 +1076,7 @@ const EditorTab = (() => {
       empty:         $("edEmpty"),
       workspace:     $("edWorkspace"),
       video:         $("edVideo"),
+      audio:         $("edAudio"),
       ruler:         $("edRuler"),
       scroll:        $("edTimelineScroll"),
       videoTrack:    $("edVideoTrack"),
@@ -918,6 +1089,7 @@ const EditorTab = (() => {
       nextClip:      $("edNextClip"),
       timecode:      $("edTimecode"),
       volume:        $("edVolume"),
+      mute:          $("edMute"),
       splitBtn:      $("edSplit"),
       deleteBtn:     $("edDelete"),
       undoBtn:       $("edUndo"),
@@ -932,7 +1104,7 @@ const EditorTab = (() => {
 
     if (refs.tabBtn) refs.tabBtn.disabled = false;
 
-    Preview.init(refs.video);
+    Preview.init(refs.video, refs.audio);
     Timeline.init(refs);
     ProjectsModal.init({ onProjectLoad: loadProjectById });
     ExportModal.init();
@@ -950,7 +1122,20 @@ const EditorTab = (() => {
     refs.playPause.addEventListener("click", () => Preview.toggle());
     refs.prevClip.addEventListener("click", () => Preview.seekToClipStart(-1));
     refs.nextClip.addEventListener("click", () => Preview.seekToClipStart(1));
-    refs.volume.addEventListener("input", () => { refs.video.volume = parseFloat(refs.volume.value); });
+    refs.volume.addEventListener("input", () => {
+      const v = parseFloat(refs.volume.value);
+      Preview.setVolume(v);
+      // Dragging the slider above 0 implicitly unmutes — matches OS media
+      // player convention.
+      if (v > 0 && Preview.isMuted()) {
+        Preview.setMuted(false);
+        updateMuteUi(refs);
+      }
+    });
+    refs.mute.addEventListener("click", () => {
+      Preview.toggleMute();
+      updateMuteUi(refs);
+    });
 
     // Toolbar
     refs.splitBtn.addEventListener("click", TimelineOps.splitAtPlayhead);
@@ -975,6 +1160,11 @@ const EditorTab = (() => {
         case "y": case "Y":
           if (e.ctrlKey || e.metaKey) { e.preventDefault(); TimelineOps.redo(); }
           break;
+        case "m": case "M":
+          e.preventDefault();
+          Preview.toggleMute();
+          updateMuteUi(refs);
+          break;
       }
     });
 
@@ -984,6 +1174,13 @@ const EditorTab = (() => {
     History.subscribe(rerender);
 
     renderEmpty(refs);
+  }
+
+  function updateMuteUi(refs) {
+    const muted = Preview.isMuted();
+    refs.mute.textContent = muted ? "🔇" : "🔊";
+    refs.mute.title = muted ? "取消静音 (M)" : "静音 (M)";
+    refs.mute.classList.toggle("is-muted", muted);
   }
 
   function isEditorActive() {

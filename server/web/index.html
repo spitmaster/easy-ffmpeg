@@ -354,7 +354,11 @@
       <div class="editor-workspace hidden" id="edWorkspace">
         <!-- 预览 -->
         <div class="editor-preview">
-          <video id="edVideo" preload="auto"></video>
+          <video id="edVideo" preload="auto" muted></video>
+          <!-- Audio is decoded in a separate element so audio-track edits
+               can be previewed independently of the video track. Hidden:
+               audio has no visual. -->
+          <audio id="edAudio" preload="auto" style="display:none"></audio>
         </div>
 
         <!-- 播控 -->
@@ -364,7 +368,10 @@
           <button class="btn btn-icon" id="edNextClip" title="下一片段 (→)">⏭</button>
           <span class="editor-timecode" id="edTimecode">00:00:00.000 / 00:00:00.000</span>
           <div class="spacer"></div>
-          <label class="editor-volume">🔊 <input type="range" id="edVolume" min="0" max="1" step="0.05" value="1"></label>
+          <div class="editor-volume">
+            <button id="edMute" class="btn btn-icon" title="静音切换 (M)">🔊</button>
+            <input type="range" id="edVolume" min="0" max="1" step="0.05" value="1" />
+          </div>
         </div>
 
         <!-- 时间轴 -->
@@ -397,7 +404,7 @@
           <button class="btn" id="edRedo" title="重做 (Ctrl+Y)" disabled>↷ 重做</button>
           <span class="muted editor-scope-label" id="edSplitScopeLabel">当前分割范围：两轨一起</span>
           <div class="spacer"></div>
-          <label class="editor-zoom">缩放 <input type="range" id="edZoom" min="0.5" max="80" step="0.5" value="8" title="Ctrl+滚轮缩放，滚轮左右滚动"></label>
+          <label class="editor-zoom">缩放 <input type="range" id="edZoom" min="0.05" max="80" step="0.01" value="8" title="Ctrl+滚轮缩放，滚轮左右滚动"></label>
         </div>
       </div>
 

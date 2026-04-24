@@ -103,6 +103,7 @@
   color: var(--muted);
 }
 .editor-volume input[type="range"] { width: 90px; accent-color: var(--accent); }
+.editor-volume .btn-icon.is-muted { color: #d46a6a; }
 
 /* ---- 时间轴 ------------------------------------------------------------
    Two-column layout:
