@@ -1069,6 +1069,132 @@ const ExportModal = (() => {
 //  EditorTab：top-level init + render glue
 // ============================================================
 
+// ============================================================
+//  BrowserCompat：detect codecs the browser can't preview, so the user
+//  isn't surprised by a silent or broken preview. Export is unaffected —
+//  ffmpeg handles everything regardless.
+//
+//  Strategy: ALLOWLIST (whitelist) over blocklist. Browsers ship a small,
+//  stable set of codecs; everything else is suspect. This may produce a
+//  false positive on the rare codec a particular browser does support, but
+//  the alert is non-fatal and tells the user how to proceed, so being a
+//  little over-eager is the right tradeoff.
+// ============================================================
+
+const BrowserCompat = (() => {
+  // Video codecs every modern Chromium-based browser plays out of the box.
+  // HEVC is intentionally NOT here — its support varies by OS+GPU; we probe
+  // for it at runtime via canPlayType.
+  const VIDEO_ALLOW = new Set([
+    "h264", "avc1", "vp8", "vp9", "av1", "av01",
+  ]);
+  const AUDIO_ALLOW = new Set([
+    "aac", "mp3", "opus", "vorbis", "flac",
+    // Linear PCM in WAV / MP4 — most variants are fine.
+    "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be",
+    "pcm_f32le", "pcm_f32be", "pcm_u8",
+  ]);
+
+  // Pretty name for each known-bad codec. Falls back to the raw name when
+  // we have no friendly label.
+  const PRETTY = {
+    ac3:        "AC-3 / Dolby Digital",
+    eac3:       "E-AC-3 / Dolby Digital Plus",
+    dts:        "DTS",
+    dtshd:      "DTS-HD",
+    truehd:     "Dolby TrueHD",
+    mlp:        "MLP",
+    mpeg2video: "MPEG-2 视频",
+    mpeg4:      "MPEG-4 Part 2 (Xvid / DivX)",
+    wmv3:       "WMV9",
+    vc1:        "VC-1",
+    hevc:       "HEVC / H.265",
+    h265:       "HEVC / H.265",
+    prores:     "Apple ProRes",
+    cinepak:    "Cinepak",
+    rv40:       "RealVideo 4",
+  };
+
+  function hevcSupported() {
+    const v = document.createElement("video");
+    const a = v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"');
+    const b = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+    return !!(a || b);
+  }
+
+  function isVideoSupported(codec) {
+    if (!codec) return true; // unknown — don't false-positive
+    if (VIDEO_ALLOW.has(codec)) return true;
+    if (codec === "hevc" || codec === "h265") return hevcSupported();
+    return false;
+  }
+  function isAudioSupported(codec) {
+    if (!codec) return true;
+    return AUDIO_ALLOW.has(codec);
+  }
+
+  function check(project) {
+    const issues = [];
+    const src = (project && project.source) || {};
+    const vc = (src.videoCodec || "").toLowerCase();
+    const ac = (src.audioCodec || "").toLowerCase();
+    if (vc && !isVideoSupported(vc)) {
+      issues.push({ kind: "video", codec: vc, label: PRETTY[vc] || vc });
+    }
+    if (src.hasAudio && ac && !isAudioSupported(ac)) {
+      issues.push({ kind: "audio", codec: ac, label: PRETTY[ac] || ac });
+    }
+    return issues;
+  }
+
+  // Show a confirm dialog. "去转码" jumps to the convert tab and prefills
+  // the input path; "继续编辑" lets the user proceed knowing preview will
+  // be degraded.
+  function alertIfIncompatible(project) {
+    const issues = check(project);
+    if (!issues.length) return;
+    const lines = ["⚠ 当前浏览器无法预览此视频："];
+    for (const i of issues) {
+      const tag = i.kind === "video" ? "视频" : "音频";
+      const effect = i.kind === "video" ? "画面无法显示" : "听不到声音";
+      lines.push(`  • ${tag}编码 ${i.label}（${i.codec}）— ${effect}`);
+    }
+    lines.push("");
+    lines.push("建议先用「视频转换」把它转成 H.264 + AAC 再剪辑，预览体验会好很多。");
+    lines.push("（导出本身不受影响，ffmpeg 能正常处理；这只是预览的问题）");
+    lines.push("");
+    lines.push("点「确定」跳转到「视频转换」并自动填入当前文件；点「取消」继续在此剪辑。");
+    if (confirm(lines.join("\n"))) {
+      jumpToConvert(project);
+    }
+  }
+
+  function jumpToConvert(project) {
+    const src = (project && project.source) || {};
+    if (typeof Tabs !== "undefined" && Tabs.switchTo) {
+      Tabs.switchTo("convert");
+    }
+    // Prefill the convert tab's input path so the user just has to press
+    // 转码. Suggest an output name based on the source name to nudge them
+    // away from overwriting the original.
+    const ip = document.getElementById("inputPath");
+    if (ip && src.path) {
+      ip.value = src.path;
+      ip.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const onName = document.getElementById("outputName");
+    if (onName && (project.name || src.path)) {
+      const base = project.name || (src.path.split(/[\\/]/).pop() || "").replace(/\.[^.]+$/, "");
+      if (base && !onName.value) {
+        onName.value = base + "_h264";
+        onName.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+  }
+
+  return { check, alertIfIncompatible };
+})();
+
 const EditorTab = (() => {
   function init() {
     const refs = {
@@ -1224,6 +1350,9 @@ const EditorTab = (() => {
     // Fit-to-width must run after the workspace is visible, otherwise
     // clientWidth reads as 0 and we'd pick the min zoom.
     requestAnimationFrame(() => Timeline.applyFit(project));
+    // Defer compat alert so the workspace renders first — otherwise the
+    // user sees a blank screen behind the modal which is mildly disorienting.
+    setTimeout(() => BrowserCompat.alertIfIncompatible(project), 100);
   }
 
   function render(state) {
