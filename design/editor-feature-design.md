@@ -1,6 +1,6 @@
-# 视频剪辑器 PRD
+# 单视频剪辑器 PRD
 
-> 本文档定义"视频剪辑器"Tab 的产品形态、交互细节、数据模型、后端 API 与 ffmpeg 导出规则。
+> 本文档定义"单视频剪辑器"Tab 的产品形态、交互细节、数据模型、后端 API 与 ffmpeg 导出规则。
 > 目标读者：开发、评审、后续维护者。
 >
 > **实现状态**：✅ MVP 已实现（v0.3.0）。本版本**替换**了旧的"视频裁剪" Tab（`design/trim-feature-design.md` 已删除）。预览精度为"关键帧对齐"级别；proxy / WebCodecs 两种精度提升方案记录在 §7，尚未落地。
@@ -104,7 +104,7 @@
 ### 3.1 整体结构
 
 ```
-┌─ 视频剪辑 Tab ──────────────────────────────────────────────────────┐
+┌─ 单视频剪辑 Tab ──────────────────────────────────────────────────────┐
 │  [📂 打开视频]  [📋 剪辑记录]  工程名[My Edit______]   [导出 ▼]    │ ← 顶栏
 ├───────────────────────────────────────────────────────────────────┤
 │                                                                   │
@@ -153,7 +153,7 @@
 | ⏸/▶ | `Space` | 播放 / 暂停（基于"节目时间"的播放器，见 §7） |
 | ⏭ 下一 clip | `→` | 播放头跳到下一 clip 起点 |
 | 时间码 | — | 显示 `节目时间 / 节目总长`，如 `00:12.340 / 01:23.456` |
-| 音量 | — | 调节 `<video>.volume`（不影响导出） |
+| 音量 | — | **已移除**——音量改为音频轨级属性，详见 §3.5 时间轴的"音频轨音量"控件 |
 
 ### 3.5 时间轴
 
@@ -162,6 +162,14 @@
 - **时间刻度**：顶部水平尺，刻度数随缩放变化（`1px/s → 20px/s`）
 - **视频轨**：一条 40px 高的 DOM 容器，上面是一个或多个 clip 块
 - **音频轨**：30px 高，显示波形 SVG（MVP 可以只显示纯色块，v2 再画波形）
+- **音频轨音量**：时间轴布局加了一列**轨道动作列**（`.timeline-track-actions`），列宽 88px，行结构与标签列一致一一对齐——音频行放一个**文字按钮**直接显示形如 `音量: 100%` / `音量: 125%` 的实时读数，刻度尺 / 视频行放空占位。前缀"音量:"消除歧义（光是数字让人猜不到这是音量），按钮本身就是不打开浮窗也能看到的当前值，同时不会再挤"🔊 音频"标签让"音频"换行。
+  - 点击按钮在按钮**附近**弹一个 124px 宽浮窗——顶端是"音频音量"标题，主体是 160px 高的垂直滑块，左侧并排 200%/100%/0% 三段刻度（绝对定位锚到滑块行高的顶/中/底，刻度后接 4px 短线视觉连到滑块），底下一条分割线 + 大号 accent 色读数实时跟随。**0–200%** 范围（boost 上限 2.0）。绑定 `project.audioVolume`（线性增益，缺省 1.0）：
+  - 浮窗用 `position: fixed` 渲染在 `<main>` 内、视口顶层（z-index 60），躲开 `.editor-timeline { overflow: hidden }` 的裁切；打开时 JS 计算坐标——优先贴到按钮**下方**，下方不够高度时自动**翻到上方**（音频按钮就处在编辑区底部，下方常常装不下）。水平方向溢出右沿则向左滑入视口
+  - 关闭：再次点按钮 / 点浮窗外任何位置 / 按 `Esc`
+  - 滑块拖动 → `EditorStore.commit({ audioVolume })` → 自动保存
+  - 预览路由：**WebAudio `GainNode`**（`<audio>.volume` 上限是 1.0，做不了 boost）。`Preview.applyAudioVolume` 懒初始化 `AudioContext + MediaElementSource → GainNode → destination`，从此 `audio.volume` 不再生效，`gain.value = audioVolume` 是单一真源。`createMediaElementSource` 抛错（同元素重复创建等）则降级到 `audio.volume = min(1, v)`，预览悄悄封顶 100%
+  - 导出：`buildAudioTrackFilter` 在音频 concat 之后接 `[a_pre]volume=X[a]`；`X == 1.0` 时不接 volume filter（保持旧 filter graph 字节级稳定）
+  - **预览播放器原本的音量按钮 / 滑块 / `M` 静音键已删除**——音量是工程持久化属性，不是预览的瞬态控件
 - **播放头**：垂直红线，覆盖整条时间轴；拖动 = scrubbing
 - **缩放滑块**：控制 `pxPerSecond`
 
@@ -187,11 +195,15 @@
 
 | 动作 | 操作 | 行为 |
 |------|------|------|
-| 播放头 seek | 单击时间轴空白 | 播放头跳到该节目时间 |
-| 播放头拖拽 | 鼠标按住播放头拖动 | scrubbing；松开时 `<video>` seek 到对应源时间 |
+| 播放头 seek | 单击时间轴空白 / 刻度尺 | 播放头跳到该节目时间，鼠标按住可继续拖动 scrub |
+| 播放头拖拽 | 鼠标按住播放头菱形头 / 命中区拖动 | 全程 scrubbing（连续 seek `<video>` 与 `<audio>`），拖动期间自动暂停，松开后若原本在播放则恢复 |
+| 播放头形态 | — | `splitScope=both` → 跨双轨的"大游标"；`splitScope=video/audio` → 该轨内的"小游标"。**播放一次即把 splitScope 提升为 `both` 并永驻**——大游标不会因为暂停就退回单轨；要恢复单轨指示，必须显式点击单条轨道空白 |
 | 选中 clip | 单击 clip | 蓝色高亮；右侧工具条"删除选中"可用 |
-| 分割 | 快捷键 `S` 或工具条 `✂` | 在**播放头所在位置**把它穿过的 clip 一分为二（`sourceStart/End` 按比例推算） |
-| 删除 | 快捷键 `Delete` 或工具条 | 删除选中 clip；后续 clip 左移填补 |
+| **范围选区** | **右键在刻度尺上按住拖动** | 选定一段 [start, end] 区间，跨刻度+两轨显示半透明黄色覆盖；同时**清空 clip 选中**（与 clip 选中互斥）并**强制 splitScope = both**（覆盖层视觉跨双轨，操作语义必须双轨同步）。覆盖时长 < 0.05s（轻点右键）则自动取消 |
+| 分割 | 快捷键 `S` 或工具条 `✂` | 有范围选区时：按当前 splitScope 在 `start` 与 `end` 各切一刀（两次分割）后清除选区；无选区时：在播放头位置切一刀 |
+| 删除 | 快捷键 `Delete` 或工具条 | 有范围选区时按钮**亮起可用**：按 splitScope 把 [start, end] 从轨道里挖空（clip 完整在内→丢弃；跨左/右边界→修剪；跨整段→拆成两段），**保留空隙不左移**；无选区时：删除选中 clip |
+| 取消范围选区 | `Esc` 键 / 再次右击不拖动 / 加载新工程 / **任意时间轴左键点击**（刻度尺、空白轨道、clip、播放头） | 选区清除（不影响 split/delete 之后的自动清除） |
+| 右键菜单抑制 | 编辑器面板内 | `panel-editor` 全局拦截 `contextmenu`：右键已被范围选区占用，浏览器原生菜单永不弹出（其他 Tab 不受影响） |
 | 拖动 clip | 鼠标按住 clip 中间拖动 | 改变 clip 在时间轴上的**顺序**（不允许重叠）；松开 snap 到网格或相邻 clip 边 |
 | 修剪左端 | 鼠标按住 clip 左边缘拖动 | 改 `sourceStart`，不改 `sourceEnd`；clip 变短或变长 |
 | 修剪右端 | 鼠标按住 clip 右边缘拖动 | 改 `sourceEnd`，不改 `sourceStart` |
@@ -247,6 +259,16 @@
 ```
 
 点"开始导出" → `POST /api/editor/export` → 进入共享的 SSE 日志视图（与其他 Tab 一致）。导出期间 Tab 切换安全（后端 job 继续跑）。
+
+**导出期间 UI 布局**：
+
+- DOM 结构：`#panel-editor` 用 `flex-direction: row`，左侧 `.editor-content`（顶栏 + 空态 + 工作区列）和右侧 `.editor-export-status`（日志面板 380px）平级；日志面板沿整个剪辑功能区的右边垂直贯穿
+- **不挤压工作区**：导出启动时给 `<body>` 挂 `editor-export-active` 类，`<main>` 的 `max-width: 1200px` 直接撤为 `none`，main 占满视口宽度。日志侧栏贴屏幕右沿，工作区获得"原宽 + 原本被居中浪费掉的左侧空白"——超宽屏 / 4K 上空间全部被利用
+- **阻断编辑**：`.editor-content.exporting::after` 全屏覆盖一层 `cursor:not-allowed` 的半透明黑（rgba 0.35）；侧栏不在覆盖范围内，"取消" / "打开文件夹" 始终可点
+- **生命周期**：启动时 `setExporting(true)` + 侧栏显示 + body 类 + 执行 `panel.start`；POST 启动失败兜底检查 `cancelBtn.disabled` 立即解除阻断；JobBus `done`/`error`/`cancelled` 任一终态 `setExporting(false)`。侧栏右上 `×` 关闭键 → 若任务仍在跑，先 `confirm` 二次确认再 `POST /api/editor/export/cancel` 取消（避免遗留孤儿 ffmpeg 进程），随后隐藏侧栏 + 摘掉 body 类 → main 收回 1200px 居中
+- **进度条**：侧栏内置 `.progress-wrap`（轨 + 百分比），由 `createJobPanel` 共用。导出启动时 `panel.start` 接收 `totalDurationSec = TL.totalDuration(project)`（节目时间轴总长，准确比 ffprobe 源时长更贴合实际剪辑结果），随后从每行 `time=HH:MM:SS.ms` 取当前时间 / 总长 = 进度。`done` 时停留 100% 短暂 600ms 后隐藏，`error/cancelled` 立即隐藏
+- **覆盖确认**：`POST /api/editor/export` 在调起 `runner.Start` 之前 `os.Stat(outPath)`，文件已存在且 `req.Overwrite=false` 时返回 409 + `existing:true` + 输出路径。前端 `createJobPanel.start` 见 409 → `await Confirm.overwrite(path)` 弹出**自绘 dialog**（不再用浏览器原生 `confirm`，UI 一致、Esc/点背景=取消、Enter=确认、显示路径用等宽字体清晰可读）→ 同意则带 `overwrite:true` 重发；拒绝则隐藏进度条结束。和 `/api/convert/start`、`/api/audio/start` 同形协议（共享同一个 `Confirm` 模块）
+- **执行前命令预览**：所有三个 export endpoint（convert / audio / editor）均接受 `dryRun: true`，server 走完参数校验和 `BuildExportArgs` 等步骤但**不**调用 `runner.Start`、**不** mkdir、**不**做 overwrite 检查，仅返回 200 + `command` 字符串。前端 `createJobPanel.start` 在真正发起任务前先 `dryRun:true` 拉一次命令 → `await Confirm.command(cmd)` 弹自绘命令预览 dialog（720px 宽、等宽 pre 块、Click-to-copy + 「📋 复制」按钮、Esc/取消=不执行）→ 用户确认 → 才发真正的 POST。命令是 server 真正会跑的命令，不是客户端凑出来的近似版本——尤其编辑器导出 filter_complex 链很长，服务端构造保证 1:1 一致
 
 ### 3.8 空态设计
 
@@ -465,8 +487,10 @@ POST /api/editor/export
 前端：
 - `<video>` 的 `src` = `/api/editor/source?path=<sourcePath>`（后端返回 byte range 支持的 file server，详见 §10）
 - "节目时间 ↔ 源时间"映射在 JS 里完成（§5.5）
-- 播放时监听 `timeupdate`：发现快到 clip 边界（`sourceEnd - 0.05s`）就 seek 下一 clip
-- 这种 seek 在 MP4 常规 GOP（2s）下大约 100ms 延迟，肉眼可察但可接受
+- 播放时监听 `timeupdate`：clip 末尾若紧邻下一 clip（< 0.01s 间距）则直接 seek 过去；否则进入"gap 时钟"模式
+- **Gap 时钟**：播放头落在视频轨空隙时，`<video>` 暂停 + `.in-gap` 类隐藏（容器 `#0b0b0b` 透出 → 黑屏），改用 `requestAnimationFrame` 按真实时间推进 `playhead`；当 playhead 跨入下一段视频 clip 时把 `<video>.currentTime` 设到对应源时间并恢复播放，gap 时钟交还给原生 timeupdate；到达节目总长则统一 pause
+- 音频独立：处于音频轨空隙时 `<audio>` 暂停（静音），不影响视频侧；`keepAudioInSync` 跨边界时硬 seek
+- **黑屏与导出一致性**：预览的视频空隙 = 黑屏；导出时 `buildVideoTrackFilter` 用 `color=c=black` 填空隙、`buildAudioTrackFilter` 用 `anullsrc` 填空隙，所见即所得
 
 **一个取舍**：用户点击时间轴 seek 到 clip 中间时，会 seek 到最近关键帧，和时间轴上播放头的位置可能差 0~1.5s。MVP 接受，不处理。
 
@@ -527,10 +551,13 @@ ffmpeg -y -i <source>
 
 ### 8.3 边界处理
 
+- **轨道时长对齐**：`BuildExportArgs` 计算 `programDur = max(VideoDuration, AudioDuration)`，`buildVideoTrackFilter` 和 `buildAudioTrackFilter` 都接收该参数；`planSegments` 在轨道末尾如果 `cursor < programDur` 则自动追加一段 trailing gap（视频用 `color=c=black`，音频用 `anullsrc`）。**没这条规则时**两个流长度不一致，浏览器 `<video>` 元素会在更短流的 EOF 处停止播放，预览看上去就是"视频结束了，剩下的音频没了"——一个真实出现过的 bug
 - 源无音轨：`audioClips` 为空，跳过音频链、不 `-map [a]`、不 `-c:a`
 - 用户删光视频轨：只输出音频（可用于单独抽音场景）
 - 用户删光音频轨：只输出视频（画面无声）
 - 两轨都空：报错拒绝导出
+- **视频轨开头不能留空**：`BuildExportArgs` 检查 `VideoClips` 最早 `ProgramStart` 是否 ≈ 0；非零 → 返回中文错误（"视频轨道开头必须有内容：第一个 clip 从 X.XXs 开始..."）。**编辑期允许临时留空**（方便用户先布置后段再补开头），导出期硬性拒绝。前端 `ExportModal` 也做同样校验，提前以 `alert` 阻止提交。**音频轨开头允许留空**——pre-roll 静音（开头几秒无配音）是正当用法，filter graph 用 `anullsrc` 自动填充
+- **轨道中间允许留空**：filter graph 自动用 `color=c=black` / `anullsrc` 填补，预览端 `gap clock` 也保持黑屏 + 静音
 - clip 数量 = 1 且覆盖全段 → 仍然走 filter_complex（简单；不搞"快速拷贝"特例）
 - clip 数量 > 100 → filter 字符串会很长；经验上 ffmpeg 能处理 100+，>500 要警告；MVP 不设硬限
 
@@ -557,6 +584,7 @@ ffmpeg -y -i <source>
 | `Ctrl + Y` / `Ctrl + Shift + Z` | 重做 |
 | `Ctrl + S` | 立即保存（也有自动保存，这是保险） |
 | `Ctrl + E` | 打开导出对话框 |
+| `Esc` | 取消刻度尺右键拖出的范围选区 |
 | `+` / `-` | 时间轴缩放 |
 
 **焦点处理**：快捷键只在 Tab 面板 focus 时生效；焦点在输入框时让原生编辑行为优先。
@@ -610,8 +638,8 @@ ffmpeg -y -i <source>
 | 文档 | 变更 |
 |------|------|
 | `design/README.md` | 目录去掉 `trim-feature-design.md`，加 `editor-feature-design.md` + `editor-module-design.md` |
-| `design/feature-design.md` | "视频裁剪"行 → "视频剪辑"；指向本文档 |
+| `design/feature-design.md` | "视频裁剪"行 → "单视频剪辑"；指向本文档 |
 | `design/architecture.md` | 目录结构加 `editor/` 子树；分层图加编辑器模块 |
 | `design/module-design.md` | 删除 §2.4 `trim_args.go`；新增 `editor/` 模块章 |
-| `design/roadmap.md` | v1.8 里程碑改成"v0.3.0 视频剪辑器（替换 trim）"；技术债里的 trim 条目删除 |
+| `design/roadmap.md` | 0.2.x 末期的"视频裁剪"里程碑被 0.3.0 单视频剪辑器替换；技术债里的 trim 条目删除 |
 | `design/trim-feature-design.md` | **删除** |

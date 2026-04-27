@@ -122,6 +122,11 @@ const EditorStore = (() => {
     playhead: 0,             // seconds, program time
     playing: false,
     pxPerSecond: 8,
+    // {start, end} program-time range (start <= end) painted across the
+    // ruler + both tracks. Set by right-drag on the ruler; consumed by
+    // split / delete; cleared by Esc, by starting a new right-drag, or by
+    // loading a different project.
+    rangeSelection: null,
   };
   const subs = new Set();
 
@@ -238,7 +243,20 @@ const Preview = (() => {
   let audio = null;
   let activeVideoIndex = -1;
   let activeAudioIndex = -1;
-  let userVolume = 1;
+  // WebAudio routing for the audio track. Going through a GainNode lets
+  // us boost above 1.0 (HTMLMediaElement.volume hard-caps at 1.0) so
+  // preview can match the export's `volume=` filter at any setting.
+  // audioCtx is created lazily on first applyAudioVolume call so we
+  // don't trip browser autoplay policies before the user gestures.
+  let audioCtx = null;
+  let gainNode = null;
+  // "Gap clock": when the program time is sitting in a video-track gap
+  // the <video> element has no frames to deliver, so we drive the
+  // playhead via requestAnimationFrame instead. Anchored to a real-time
+  // sample so leaving a gap and re-entering it stays linear.
+  let gapClockId = null;
+  let gapAnchorReal = 0;       // performance.now() at clock start
+  let gapAnchorPlayhead = 0;   // program time at clock start
 
   function init(videoEl, audioEl) {
     video = videoEl;
@@ -251,11 +269,32 @@ const Preview = (() => {
     video.volume = 0;
     if (audio) {
       audio.muted = false;
-      audio.volume = userVolume;
+      // Initial volume comes from project on first loadProject; until
+      // then keep it at unity so silent-by-default isn't surprising.
+      audio.volume = 1;
     }
 
     video.addEventListener("timeupdate", onVideoTimeUpdate);
-    video.addEventListener("ended", () => EditorStore.set({ playing: false }));
+    // When the <video> element naturally hits source EOF (e.g. the
+    // user's video clip extends to the end of the source file and our
+    // timeupdate-based detector didn't catch the boundary first), don't
+    // stop everything if there's still audio program time remaining —
+    // hand off to the gap clock so the audio plays through to its end.
+    video.addEventListener("ended", () => {
+      const st = EditorStore.get();
+      if (!st.project || !st.playing) {
+        EditorStore.set({ playing: false });
+        return;
+      }
+      const total = TL.totalDuration(st.project);
+      if (st.playhead < total - 0.01) {
+        activeVideoIndex = -1;
+        video.classList.add("in-gap");
+        startGapClock();
+        return;
+      }
+      EditorStore.set({ playing: false });
+    });
     video.addEventListener("loadedmetadata", () => {
       const st = EditorStore.get();
       if (st.project) {
@@ -284,24 +323,52 @@ const Preview = (() => {
     }
   }
 
-  // Exposed for the volume slider. Stored so subsequent loadProject() calls
-  // can reapply it to freshly-assigned elements.
-  function setVolume(v) {
-    userVolume = v;
-    if (audio) audio.volume = v;
+  // Audio volume comes from project.audioVolume (a per-project track
+  // property), not from a transient UI control. applyAudioVolume is
+  // called on project load, on store changes, and after the <audio>
+  // element rebinds, so what plays back stays in lockstep with the
+  // project state and (more importantly) with what export will emit.
+  //
+  // Routing: HTMLMediaElement.volume is capped at 1.0, so values above
+  // 100% (boost) need WebAudio. We lazy-init a GainNode on first call
+  // and route the <audio> element through it; from then on audio.volume
+  // is irrelevant and the gain node is the single source of truth.
+  // Falls back to setting audio.volume directly if WebAudio isn't
+  // available — preview will silently cap at 100% in that case.
+  function applyAudioVolume() {
+    if (!audio) return;
+    const p = EditorStore.get().project;
+    const v = Math.max(0, p && p.audioVolume != null ? p.audioVolume : 1);
+    if (!gainNode) initGainNode();
+    if (gainNode) {
+      gainNode.gain.value = v;
+      audio.volume = 1; // gain node is in charge
+      if (audioCtx && audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
+    } else {
+      audio.volume = Math.min(1, v);
+    }
   }
 
-  function setMuted(m) {
-    if (audio) audio.muted = !!m;
-  }
-
-  function isMuted() {
-    return audio ? audio.muted : false;
-  }
-
-  function toggleMute() {
-    setMuted(!isMuted());
-    return isMuted();
+  function initGainNode() {
+    if (!audio || gainNode) return;
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return;
+    try {
+      audioCtx = new Ctor();
+      const src = audioCtx.createMediaElementSource(audio);
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1;
+      src.connect(gainNode).connect(audioCtx.destination);
+    } catch (e) {
+      // createMediaElementSource throws if called twice on the same
+      // element, or if the element is in a state WebAudio rejects. We
+      // log once and fall back to plain audio.volume.
+      console.warn("[editor] WebAudio gain unavailable; preview volume capped at 100%:", e);
+      audioCtx = null;
+      gainNode = null;
+    }
   }
 
   function loadProject(project) {
@@ -311,6 +378,9 @@ const Preview = (() => {
     if (audio && !sameSrc(audio, url)) audio.src = url;
     activeVideoIndex = -1;
     activeAudioIndex = -1;
+    stopGapClock();
+    video.classList.remove("in-gap");
+    applyAudioVolume();
     seek(0);
   }
 
@@ -325,19 +395,28 @@ const Preview = (() => {
     if (audio) audio.muted = false;
     applyVideoFor(st.playhead);
     applyAudioFor(st.playhead);
-    const promises = [];
-    if (video.paused) promises.push(video.play().catch(() => {}));
-    // Audio may legitimately stay paused (gap on the audio track) — only
-    // start it if we have an active audio clip.
-    if (audio && audio.paused && activeAudioIndex >= 0) {
-      promises.push(audio.play().catch(() => {}));
+    // Once playback starts, the cursor becomes a global program-time
+    // indicator and stays that way after pause too — flipping back to a
+    // single-track playhead post-playback feels like the cursor is
+    // "regressing". Promote splitScope so visual + cut semantics agree.
+    EditorStore.set({ playing: true, splitScope: "both" });
+    // Pick a clock: real <video> when there's a clip to decode, gap
+    // clock when there isn't. Never both — they'd race on `playhead`.
+    if (activeVideoIndex >= 0) {
+      stopGapClock();
+      if (video.paused) video.play().catch(() => {});
+    } else {
+      startGapClock();
     }
-    Promise.all(promises).then(() => EditorStore.set({ playing: true }));
+    if (audio && audio.paused && activeAudioIndex >= 0) {
+      audio.play().catch(() => {});
+    }
   }
 
   function pause() {
     if (video) video.pause();
     if (audio) audio.pause();
+    stopGapClock();
     EditorStore.set({ playing: false });
   }
 
@@ -354,6 +433,69 @@ const Preview = (() => {
     EditorStore.set({ playhead: clamped });
     applyVideoFor(clamped);
     applyAudioFor(clamped);
+    // Mid-playback seeks may cross between gap and clip — re-pick the
+    // clock so we don't end up stuck (video paused but no gap clock).
+    if (st.playing) {
+      if (activeVideoIndex >= 0) {
+        stopGapClock();
+        if (video.paused) video.play().catch(() => {});
+      } else {
+        // Re-anchor the gap clock at the new playhead so elapsed-time
+        // math stays linear after the seek.
+        stopGapClock();
+        startGapClock();
+      }
+    }
+  }
+
+  // ---- Gap clock --------------------------------------------------------
+  //
+  // Advances the program playhead by real elapsed time while the video
+  // track has no clip under the cursor. Each tick re-checks whether the
+  // playhead has crossed into a video clip; when it has, we hand control
+  // back to the <video> element. End of program ⇒ pause everything.
+
+  function startGapClock() {
+    if (gapClockId !== null) return;
+    gapAnchorReal = performance.now();
+    gapAnchorPlayhead = EditorStore.get().playhead;
+    gapClockId = requestAnimationFrame(gapTick);
+  }
+
+  function stopGapClock() {
+    if (gapClockId !== null) {
+      cancelAnimationFrame(gapClockId);
+      gapClockId = null;
+    }
+  }
+
+  function gapTick() {
+    gapClockId = null;
+    const st = EditorStore.get();
+    if (!st.playing || !st.project) return;
+    const total = TL.totalDuration(st.project);
+    const elapsed = (performance.now() - gapAnchorReal) / 1000;
+    const newPlayhead = gapAnchorPlayhead + elapsed;
+    if (newPlayhead >= total - 1e-3) {
+      EditorStore.set({ playhead: total });
+      pause();
+      return;
+    }
+    EditorStore.set({ playhead: newPlayhead });
+    const videoClips = (st.project.videoClips) || [];
+    const pos = TL.programToSource(videoClips, newPlayhead);
+    if (pos) {
+      // Crossed into a video clip — wake the <video> element up. From
+      // here, timeupdate drives the clock; gap clock stops.
+      activeVideoIndex = pos.i;
+      video.classList.remove("in-gap");
+      if (video.readyState > 0) video.currentTime = pos.src;
+      if (video.paused) video.play().catch(() => {});
+      keepAudioInSync(newPlayhead);
+      return;
+    }
+    keepAudioInSync(newPlayhead);
+    gapClockId = requestAnimationFrame(gapTick);
   }
 
   // Previous / next boundary on the video track (Arrow keys / ⏮ ⏭).
@@ -380,11 +522,15 @@ const Preview = (() => {
     const clips = (EditorStore.get().project && EditorStore.get().project.videoClips) || [];
     const pos = TL.programToSource(clips, t);
     if (!pos) {
+      // Gap (or empty track): show black instead of freezing on the last
+      // frame, and mark the element so CSS can hide it.
       activeVideoIndex = -1;
       if (!video.paused) video.pause();
+      video.classList.add("in-gap");
       return;
     }
     activeVideoIndex = pos.i;
+    video.classList.remove("in-gap");
     if (video.readyState > 0 && Math.abs(video.currentTime - pos.src) > 0.05) {
       video.currentTime = pos.src;
     }
@@ -397,22 +543,33 @@ const Preview = (() => {
     const c = clips[activeVideoIndex];
     if (!c) return;
 
-    // End of current video clip — jump to the next in time order.
+    // End of current video clip. If the next clip is back-to-back we seek
+    // straight into it; otherwise a gap follows (or no more clips) and the
+    // gap clock takes over so the playhead keeps advancing while the
+    // preview shows black.
     if (video.currentTime >= c.sourceEnd - 0.01) {
       const sorted = clips.slice().sort((a, b) => a.programStart - b.programStart);
       const curIdx = sorted.findIndex(x => x.id === c.id);
       const nextClip = sorted[curIdx + 1];
-      if (!nextClip) {
-        pause();
-        EditorStore.set({ playhead: TL.programDuration(clips) });
+      const programEnd = c.programStart + (c.sourceEnd - c.sourceStart);
+      if (nextClip && nextClip.programStart - programEnd < 0.01) {
+        // Back-to-back — no visible gap, no need for the gap clock.
+        activeVideoIndex = clips.findIndex(x => x.id === nextClip.id);
+        video.currentTime = nextClip.sourceStart;
+        EditorStore.set({ playhead: nextClip.programStart });
+        applyAudioFor(nextClip.programStart);
         return;
       }
-      activeVideoIndex = clips.findIndex(x => x.id === nextClip.id);
-      video.currentTime = nextClip.sourceStart;
-      EditorStore.set({ playhead: nextClip.programStart });
-      // Jumping ahead on the video clock may land the playhead inside a
-      // different audio clip — resync rather than rely on drift detection.
-      applyAudioFor(nextClip.programStart);
+      // Gap follows (or program ended on this track) — hand off to gap clock.
+      EditorStore.set({ playhead: programEnd });
+      activeVideoIndex = -1;
+      video.classList.add("in-gap");
+      if (!video.paused) video.pause();
+      keepAudioInSync(programEnd);
+      // Re-read playing from the store rather than the entry snapshot
+      // (`st`) — defensive against any subscriber side-effect that may
+      // have flipped state between function entry and here.
+      if (EditorStore.get().playing) startGapClock();
       return;
     }
 
@@ -488,7 +645,7 @@ const Preview = (() => {
     }
   }
 
-  return { init, loadProject, play, pause, toggle, seek, seekToClipStart, setVolume, setMuted, isMuted, toggleMute };
+  return { init, loadProject, play, pause, toggle, seek, seekToClipStart, applyAudioVolume };
 })();
 
 // ============================================================
@@ -515,6 +672,9 @@ const Timeline = (() => {
     els.ruler.addEventListener("mousedown", onRulerMouseDown);
     els.videoTrack.addEventListener("mousedown", (e) => onTrackMouseDown(e, TRACK_VIDEO));
     els.audioTrack.addEventListener("mousedown", (e) => onTrackMouseDown(e, TRACK_AUDIO));
+    els.playheadBig.addEventListener("mousedown", onPlayheadMouseDown);
+    els.playheadVideo.addEventListener("mousedown", onPlayheadMouseDown);
+    els.playheadAudio.addEventListener("mousedown", onPlayheadMouseDown);
     if (els.scroll) els.scroll.addEventListener("wheel", onWheel, { passive: false });
   }
 
@@ -573,6 +733,22 @@ const Timeline = (() => {
     renderTrack(state, els.videoTrack, TRACK_VIDEO);
     renderTrack(state, els.audioTrack, TRACK_AUDIO);
     renderPlayhead(state);
+    renderRangeSelection(state);
+  }
+
+  function renderRangeSelection(state) {
+    const el = els.rangeSel;
+    if (!el) return;
+    if (!state.project || !state.rangeSelection) {
+      el.style.display = "none";
+      return;
+    }
+    const a = Math.min(state.rangeSelection.start, state.rangeSelection.end);
+    const b = Math.max(state.rangeSelection.start, state.rangeSelection.end);
+    const ppS = state.pxPerSecond;
+    el.style.display = "block";
+    el.style.left  = (a * ppS) + "px";
+    el.style.width = Math.max(1, (b - a) * ppS) + "px";
   }
 
   function renderRuler(state) {
@@ -671,8 +847,11 @@ const Timeline = (() => {
   }
 
   function renderPlayhead(state) {
-    // Big playhead spans both tracks when splitScope === "both"
-    // Small playhead sits in one track when splitScope === "video" or "audio"
+    // splitScope drives the playhead form: "both" → cross-track big
+    // playhead; "video" / "audio" → single-track playhead inside that
+    // track. Hitting play() promotes splitScope to "both" (Preview.play),
+    // and it sticks after pause — so the cursor never regresses from
+    // global to single-track on its own.
     if (!state.project) {
       els.playheadBig.style.display = "none";
       els.playheadVideo.style.display = "none";
@@ -688,23 +867,113 @@ const Timeline = (() => {
 
   // ---- Ruler / track click handlers -------------------------------------
 
+  // Continuously seek to the cursor's X position on the ruler. Used by
+  // ruler click-drag and by grabbing a playhead handle directly. Pauses
+  // playback during the drag and resumes if it was playing, so audio
+  // doesn't keep ticking against the seeking video.
+  function startScrubDrag(ev) {
+    ev.preventDefault();
+    const wasPlaying = EditorStore.get().playing;
+    if (wasPlaying) Preview.pause();
+    const seekFromClientX = (clientX) => {
+      const rect = els.ruler.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const t = Math.max(0, x / EditorStore.get().pxPerSecond);
+      Preview.seek(t);
+    };
+    seekFromClientX(ev.clientX);
+    function onMove(e) { seekFromClientX(e.clientX); }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      if (wasPlaying) Preview.play();
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   function onRulerMouseDown(ev) {
+    if (ev.button === 2) {
+      // Right-click drag → range select. Range and clip selections are
+      // mutually exclusive, so wipe the clip selection here.
+      startRangeSelect(ev);
+      return;
+    }
+    // Any non-range left-click on the timeline cancels the range — the
+    // user is starting a new action, the highlight shouldn't linger.
+    EditorStore.set({ splitScope: "both", selection: [], rangeSelection: null });
+    startScrubDrag(ev);
+  }
+
+  // Right-drag on the ruler defines a [start, end] program-time selection.
+  // While dragging we keep both endpoints in store order (start = anchor,
+  // end = cursor) so the visual mirrors the gesture; we normalize on mouseup
+  // so consumers (split/delete) can assume start <= end.
+  function startRangeSelect(ev) {
+    ev.preventDefault();
+    const project = EditorStore.get().project;
+    if (!project) return;
+    const total = TL.totalDuration(project);
+    const ppS = EditorStore.get().pxPerSecond;
     const rect = els.ruler.getBoundingClientRect();
-    const x = ev.clientX - rect.left;
-    const t = Math.max(0, x / EditorStore.get().pxPerSecond);
-    Preview.seek(t);
-    EditorStore.set({ splitScope: "both", selection: [] });
+    const toTime = (clientX) =>
+      Math.max(0, Math.min(total, (clientX - rect.left) / ppS));
+    const anchor = toTime(ev.clientX);
+    // Clip selection and range selection are mutually exclusive — drop
+    // any selected clips so the toolbar reflects "range mode". Also force
+    // splitScope back to "both": the range overlay paints across ruler +
+    // both tracks, so any inherited single-track scope (left over from
+    // clicking a video/audio clip earlier) would silently make split /
+    // delete only touch one track and confuse the user.
+    EditorStore.set({
+      rangeSelection: { start: anchor, end: anchor },
+      selection: [],
+      splitScope: "both",
+    });
+    function onMove(e) {
+      EditorStore.set({ rangeSelection: { start: anchor, end: toTime(e.clientX) } });
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      const r = EditorStore.get().rangeSelection;
+      if (!r) return;
+      const a = Math.min(r.start, r.end);
+      const b = Math.max(r.start, r.end);
+      // A bare right-click (no real drag) clears the range — gives the user
+      // an explicit way to dismiss it without reaching for the keyboard.
+      if (b - a < 0.05) EditorStore.set({ rangeSelection: null });
+      else EditorStore.set({ rangeSelection: { start: a, end: b } });
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  // Grab handle on any of the three playheads — drag-scrubs without
+  // changing splitScope. Cancels the range selection, since starting any
+  // other timeline gesture means the user has moved on from "range mode".
+  function onPlayheadMouseDown(ev) {
+    if (ev.button !== 0) return;
+    ev.stopPropagation();
+    if (EditorStore.get().rangeSelection) EditorStore.set({ rangeSelection: null });
+    startScrubDrag(ev);
   }
 
   function onTrackMouseDown(ev, trackId) {
+    // Right-click on a track is a no-op — range select only triggers on
+    // the ruler. We just swallow the event so contextmenu suppression at
+    // the panel level can do its job without surprising selection changes.
+    if (ev.button !== 0) return;
+    // Any track interaction cancels the range — clip-mode and range-mode
+    // are mutually exclusive.
+    if (EditorStore.get().rangeSelection) EditorStore.set({ rangeSelection: null });
+
     const clipEl = ev.target.closest(".clip");
     if (!clipEl) {
-      // empty track area click → seek + narrow split scope to this track
-      const rect = ev.currentTarget.getBoundingClientRect();
-      const x = ev.clientX - rect.left;
-      const t = Math.max(0, x / EditorStore.get().pxPerSecond);
-      Preview.seek(t);
+      // empty track area click → narrow split scope to this track, then
+      // start scrub-drag so the user can swipe to a precise time.
       EditorStore.set({ splitScope: trackId, selection: [] });
+      startScrubDrag(ev);
       return;
     }
     const handle = ev.target.closest(".clip-handle");
@@ -872,27 +1141,108 @@ const TimelineOps = (() => {
     return { [key]: next };
   }
 
+  // splitAtPlayhead now also serves the "range select" case: if a range
+  // selection exists, split each in-scope track at both range edges (two
+  // cuts). Otherwise fall back to the original single-cut at playhead.
   function splitAtPlayhead() {
     const st = EditorStore.get();
     if (!st.project) return;
-    const t = st.playhead;
-    let patch = {};
-    if (st.splitScope === "both" || st.splitScope === TRACK_VIDEO) {
-      const p = splitTrack(st.project, TRACK_VIDEO, t);
-      if (p) Object.assign(patch, p);
+    const r = st.rangeSelection;
+    const cuts = (r && (r.end - r.start) > 0.05) ? [r.start, r.end] : [st.playhead];
+    const tracks = [];
+    if (st.splitScope === "both" || st.splitScope === TRACK_VIDEO) tracks.push(TRACK_VIDEO);
+    if (st.splitScope === "both" || st.splitScope === TRACK_AUDIO) tracks.push(TRACK_AUDIO);
+
+    let cur = st.project;
+    let changed = false;
+    for (const trackId of tracks) {
+      // Splitting the same track at two times in a row needs the second
+      // call to see the updated clip array, otherwise the second cut
+      // targets the pre-split clip and lands in the wrong place.
+      for (const t of cuts) {
+        const p = splitTrack(cur, trackId, t);
+        if (p) { cur = Object.assign({}, cur, p); changed = true; }
+      }
     }
-    if (st.splitScope === "both" || st.splitScope === TRACK_AUDIO) {
-      const p = splitTrack(st.project, TRACK_AUDIO, t);
-      if (p) Object.assign(patch, p);
-    }
-    if (!Object.keys(patch).length) return;
+    if (!changed) return;
+    const patch = {};
+    if (cur.videoClips !== st.project.videoClips) patch.videoClips = cur.videoClips;
+    if (cur.audioClips !== st.project.audioClips) patch.audioClips = cur.audioClips;
     EditorStore.commit(patch);
+    if (r) EditorStore.set({ rangeSelection: null });
     History.push(EditorStore.get().project);
   }
 
+  // Trim a track's clips so [rangeStart, rangeEnd] becomes empty space.
+  // Returns a new clips array; gaps are first-class so we never reflow.
+  //   - clip wholly outside        → kept as-is
+  //   - clip wholly inside         → dropped
+  //   - clip spans the whole range → split into two (left + right shoulder)
+  //   - clip overlaps left edge    → trimmed on the right
+  //   - clip overlaps right edge   → trimmed on the left
+  function carveRange(clips, trackId, rangeStart, rangeEnd) {
+    const out = [];
+    for (const c of clips) {
+      const ps = c.programStart;
+      const pe = c.programStart + (c.sourceEnd - c.sourceStart);
+      if (pe <= rangeStart + 1e-6 || ps >= rangeEnd - 1e-6) { out.push(c); continue; }
+      if (ps >= rangeStart - 1e-6 && pe <= rangeEnd + 1e-6) { continue; }
+      if (ps < rangeStart && pe > rangeEnd) {
+        const leftDur = rangeStart - ps;
+        out.push(Object.assign({}, c, { sourceEnd: c.sourceStart + leftDur }));
+        out.push(Object.assign({}, c, {
+          id: TL.genClipId(trackId),
+          sourceStart: c.sourceStart + (rangeEnd - ps),
+          programStart: rangeEnd,
+        }));
+        continue;
+      }
+      if (ps < rangeStart) {
+        out.push(Object.assign({}, c, { sourceEnd: c.sourceStart + (rangeStart - ps) }));
+        continue;
+      }
+      // ps >= rangeStart, pe > rangeEnd: trim left edge of clip
+      out.push(Object.assign({}, c, {
+        sourceStart: c.sourceStart + (rangeEnd - ps),
+        programStart: rangeEnd,
+      }));
+    }
+    return out;
+  }
+
+  // deleteSelection covers two distinct intents now:
+  //   1. range selection set → carve [start, end] out of each in-scope
+  //      track, leaving a hole. Selection of clips is ignored.
+  //   2. otherwise → drop the clips named in `selection` (legacy behavior).
   function deleteSelection() {
     const st = EditorStore.get();
-    if (!st.project || !st.selection.length) return;
+    if (!st.project) return;
+    const r = st.rangeSelection;
+    if (r && (r.end - r.start) > 0.05) {
+      const tracks = [];
+      if (st.splitScope === "both" || st.splitScope === TRACK_VIDEO) tracks.push(TRACK_VIDEO);
+      if (st.splitScope === "both" || st.splitScope === TRACK_AUDIO) tracks.push(TRACK_AUDIO);
+      const patch = {};
+      for (const trackId of tracks) {
+        const key = trackId === TRACK_VIDEO ? "videoClips" : "audioClips";
+        const clips = st.project[key] || [];
+        const next = carveRange(clips, trackId, r.start, r.end);
+        if (next.length !== clips.length || next.some((c, i) => c !== clips[i])) {
+          patch[key] = next;
+        }
+      }
+      if (!Object.keys(patch).length) {
+        // Nothing actually changed — still clear the range so the UI
+        // doesn't keep dangling a stale highlight.
+        EditorStore.set({ rangeSelection: null });
+        return;
+      }
+      EditorStore.commit(patch);
+      EditorStore.set({ rangeSelection: null, selection: [] });
+      History.push(EditorStore.get().project);
+      return;
+    }
+    if (!st.selection.length) return;
     const vIds = new Set(Sel.inTrack(st.selection, TRACK_VIDEO));
     const aIds = new Set(Sel.inTrack(st.selection, TRACK_AUDIO));
     const patch = {};
@@ -927,7 +1277,9 @@ const ProjectsModal = (() => {
     emptyEl  = $("edProjectEmpty");
     onLoad   = onProjectLoad;
     $("edProjectsClose").addEventListener("click", close);
-    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
+    // Backdrop click no longer closes the modal — too easy to dismiss
+    // by accident while reaching for a button. The × close button and
+    // Esc key are the explicit dismissal paths.
   }
 
   async function open() {
@@ -1001,6 +1353,9 @@ const ExportModal = (() => {
       finishBar:       $("edExportFinishBar"),
       finishText:      $("edExportFinishText"),
       finishRevealBtn: $("edExportFinishReveal"),
+      progressWrap:    $("edProgressWrap"),
+      progressFill:    $("edProgressFill"),
+      progressText:    $("edProgressText"),
       cancelUrl:       "/api/editor/export/cancel",
       runningLabel:    "导出中...",
       doneLabel:       "✓ 导出完成",
@@ -1010,7 +1365,40 @@ const ExportModal = (() => {
 
     $("edExportClose").addEventListener("click", close);
     $("edExportCancel").addEventListener("click", close);
-    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
+    // Backdrop click no longer closes the export config dialog — too
+    // easy to lose carefully-tuned export settings by an off-target
+    // click. × close, "取消" button, and Esc are the explicit ways out.
+
+    // Close button on the right-hand log sidebar. If a job is still
+    // running, closing the panel implicitly cancels it — leaving an
+    // orphan ffmpeg process running in the background while its only UI
+    // surface is gone would be confusing. Confirm first so a misclick
+    // doesn't throw away a long export. After cancel, terminal JobBus
+    // events (`cancelled`) clear .exporting; we still hide the sidebar
+    // and shrink main here so the close feels immediate either way.
+    $("edExportClosePanel").addEventListener("click", async () => {
+      const running = !$("edExportCancelBtn").disabled;
+      if (running) {
+        if (!confirm("导出仍在进行中，关闭面板将取消导出。确认关闭？")) return;
+        try { await Http.postJSON("/api/editor/export/cancel", {}); } catch {}
+      }
+      statusEl.classList.add("hidden");
+      document.body.classList.remove("editor-export-active");
+      setExporting(false);
+    });
+
+    // Track the export lifecycle so we can block / unblock the editor.
+    // The blocker is a CSS overlay tied to .exporting on the workspace —
+    // we set it the moment we issue the start request and clear it on
+    // any terminal event so the user never gets stuck.
+    if (typeof JobBus !== "undefined" && JobBus.subscribe) {
+      JobBus.subscribe((ev) => {
+        if (statusEl.classList.contains("hidden")) return;
+        if (ev.type === "done" || ev.type === "error" || ev.type === "cancelled") {
+          setExporting(false);
+        }
+      });
+    }
 
     $("edExportPickDir").addEventListener("click", async () => {
       const start = $("edExportOutDir").value || (Dirs.get() || {}).outputDir || "";
@@ -1034,18 +1422,53 @@ const ExportModal = (() => {
         },
       };
       if (!body.export.outputDir) { alert("请选择输出目录"); return; }
-      const vCount = (st.project.videoClips || []).length;
-      const aCount = (st.project.audioClips || []).length;
-      if (!vCount && !aCount) { alert("时间轴为空，无法导出"); return; }
+      const vClips = (st.project.videoClips || []);
+      const aClips = (st.project.audioClips || []);
+      if (!vClips.length && !aClips.length) { alert("时间轴为空，无法导出"); return; }
+      // Leading-gap guard: only the video track must start at 0 (a
+      // black-screen prefix is almost always a mistake). Audio is free
+      // to start late — pre-roll silence before the first dialogue is a
+      // legitimate use case. Backend mirrors this rule.
+      if (vClips.length) {
+        const t = vClips.reduce((m, c) => Math.min(m, c.programStart), Infinity);
+        if (t > 0.001) {
+          alert("视频轨道开头必须有内容：第一个 clip 从 " + t.toFixed(2) + "s 开始。\n请把它拖到 0 秒再导出。");
+          return;
+        }
+      }
       await EditorStore.flushSave();
       close();
       statusEl.classList.remove("hidden");
+      // Widen <main> so the editor doesn't shrink — see CSS rule on
+      // body.editor-export-active. Stays on after the job finishes
+      // (sidebar still showing the success log) until the user clicks
+      // the sidebar's × close button.
+      document.body.classList.add("editor-export-active");
+      setExporting(true);
       await panel.start({
         url: "/api/editor/export",
         body,
         outputPath: Path.join(body.export.outputDir, body.export.outputName + "." + body.export.format),
+        // Editor knows the program duration exactly — pass it so the
+        // progress bar starts updating from the very first time= line
+        // rather than waiting for ffmpeg's "Duration:" startup print.
+        totalDurationSec: TL.totalDuration(st.project),
       });
+      // panel.start swallows POST failures into a finish-bar error and
+      // returns without firing JobBus events, so the lifecycle subscriber
+      // would never run for that branch. setRunning(true) fires only on
+      // successful start; check it to know whether to keep the editor
+      // blocked or release it now.
+      if ($("edExportCancelBtn").disabled) setExporting(false);
     });
+  }
+
+  // Toggle the editor-blocking overlay. Pulled out of the click handler
+  // so the JobBus subscription can clear it from any terminal state.
+  function setExporting(running) {
+    const content = document.querySelector("#panel-editor .editor-content");
+    if (!content) return;
+    content.classList.toggle("exporting", !!running);
   }
 
   function open() {
@@ -1210,12 +1633,15 @@ const EditorTab = (() => {
       playheadBig:   $("edPlayheadBig"),
       playheadVideo: $("edPlayheadVideo"),
       playheadAudio: $("edPlayheadAudio"),
+      rangeSel:      $("edRangeSel"),
       playPause:     $("edPlayPause"),
       prevClip:      $("edPrevClip"),
       nextClip:      $("edNextClip"),
       timecode:      $("edTimecode"),
-      volume:        $("edVolume"),
-      mute:          $("edMute"),
+      audioVolume:        $("edAudioVolume"),
+      audioVolumePct:     $("edAudioVolumePct"),
+      audioVolumeBtn:     $("edAudioVolumeBtn"),
+      audioVolumePopover: $("edAudioVolumePopover"),
       splitBtn:      $("edSplit"),
       deleteBtn:     $("edDelete"),
       undoBtn:       $("edUndo"),
@@ -1229,6 +1655,12 @@ const EditorTab = (() => {
     };
 
     if (refs.tabBtn) refs.tabBtn.disabled = false;
+
+    // Right-click is repurposed (range select on the ruler) — kill the
+    // browser's default context menu anywhere inside the editor panel so a
+    // stray right-click doesn't pop the OS menu over our timeline.
+    const panel = document.getElementById("panel-editor");
+    if (panel) panel.addEventListener("contextmenu", (e) => e.preventDefault());
 
     Preview.init(refs.video, refs.audio);
     Timeline.init(refs);
@@ -1248,19 +1680,26 @@ const EditorTab = (() => {
     refs.playPause.addEventListener("click", () => Preview.toggle());
     refs.prevClip.addEventListener("click", () => Preview.seekToClipStart(-1));
     refs.nextClip.addEventListener("click", () => Preview.seekToClipStart(1));
-    refs.volume.addEventListener("input", () => {
-      const v = parseFloat(refs.volume.value);
-      Preview.setVolume(v);
-      // Dragging the slider above 0 implicitly unmutes — matches OS media
-      // player convention.
-      if (v > 0 && Preview.isMuted()) {
-        Preview.setMuted(false);
-        updateMuteUi(refs);
-      }
+    // Audio track volume — chevron button on the audio label opens a
+    // small fixed-position popover with a vertical slider (0–200%).
+    // Drag → commit project.audioVolume → preview gain & export filter
+    // both pick up the new value. Outside-click / Esc / second click
+    // closes the popover.
+    refs.audioVolume.addEventListener("input", () => {
+      if (!EditorStore.get().project) return;
+      const v = parseFloat(refs.audioVolume.value);
+      EditorStore.commit({ audioVolume: v });
+      Preview.applyAudioVolume();
     });
-    refs.mute.addEventListener("click", () => {
-      Preview.toggleMute();
-      updateMuteUi(refs);
+    refs.audioVolumeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleAudioVolumePopover(refs);
+    });
+    refs.audioVolumePopover.addEventListener("mousedown", (e) => e.stopPropagation());
+    document.addEventListener("mousedown", () => {
+      if (!refs.audioVolumePopover.classList.contains("hidden")) {
+        closeAudioVolumePopover(refs);
+      }
     });
 
     // Toolbar
@@ -1286,10 +1725,12 @@ const EditorTab = (() => {
         case "y": case "Y":
           if (e.ctrlKey || e.metaKey) { e.preventDefault(); TimelineOps.redo(); }
           break;
-        case "m": case "M":
-          e.preventDefault();
-          Preview.toggleMute();
-          updateMuteUi(refs);
+        case "Escape":
+          if (!refs.audioVolumePopover.classList.contains("hidden")) {
+            closeAudioVolumePopover(refs);
+          } else if (EditorStore.get().rangeSelection) {
+            EditorStore.set({ rangeSelection: null });
+          }
           break;
       }
     });
@@ -1302,16 +1743,53 @@ const EditorTab = (() => {
     renderEmpty(refs);
   }
 
-  function updateMuteUi(refs) {
-    const muted = Preview.isMuted();
-    refs.mute.textContent = muted ? "🔇" : "🔊";
-    refs.mute.title = muted ? "取消静音 (M)" : "静音 (M)";
-    refs.mute.classList.toggle("is-muted", muted);
-  }
-
   function isEditorActive() {
     const panel = $("panel-editor");
     return panel && !panel.classList.contains("hidden");
+  }
+
+  // Position the volume popover under the chevron button. position:fixed
+  // means we can ignore .editor-timeline's overflow:hidden — the popover
+  // floats at the viewport level. We anchor to the button's bottom-left,
+  // then nudge inward if the popover would clip off the right edge of
+  // the viewport (cheap fallback; the popover is small enough that this
+  // is rarely needed in practice).
+  function toggleAudioVolumePopover(refs) {
+    if (refs.audioVolumePopover.classList.contains("hidden")) {
+      openAudioVolumePopover(refs);
+    } else {
+      closeAudioVolumePopover(refs);
+    }
+  }
+  function openAudioVolumePopover(refs) {
+    const btnRect = refs.audioVolumeBtn.getBoundingClientRect();
+    refs.audioVolumePopover.classList.remove("hidden");
+    const popRect = refs.audioVolumePopover.getBoundingClientRect();
+    // Horizontal: anchor under the button; if it would clip off the
+    // right edge, slide left until it fits.
+    let left = btnRect.left;
+    if (left + popRect.width > window.innerWidth - 8) {
+      left = window.innerWidth - popRect.width - 8;
+    }
+    if (left < 8) left = 8;
+    // Vertical: prefer below the button, but the audio-volume button
+    // sits near the bottom of the editor (timeline is the bottommost
+    // section), so "below" almost always clips. Flip above whenever
+    // below doesn't fit, with the same below-button gap.
+    const gap = 6;
+    const fitsBelow = btnRect.bottom + gap + popRect.height <= window.innerHeight - 8;
+    const top = fitsBelow
+      ? btnRect.bottom + gap
+      : Math.max(8, btnRect.top - popRect.height - gap);
+    refs.audioVolumePopover.style.left = left + "px";
+    refs.audioVolumePopover.style.top  = top + "px";
+    refs.audioVolumeBtn.classList.add("is-open");
+    refs.audioVolumeBtn.setAttribute("aria-expanded", "true");
+  }
+  function closeAudioVolumePopover(refs) {
+    refs.audioVolumePopover.classList.add("hidden");
+    refs.audioVolumeBtn.classList.remove("is-open");
+    refs.audioVolumeBtn.setAttribute("aria-expanded", "false");
   }
 
   function isEditableFocus() {
@@ -1344,7 +1822,7 @@ const EditorTab = (() => {
   }
 
   function loadProject(project) {
-    EditorStore.set({ project, selection: [], playhead: 0, playing: false, dirty: false, splitScope: "both" });
+    EditorStore.set({ project, selection: [], playhead: 0, playing: false, dirty: false, splitScope: "both", rangeSelection: null });
     History.reset(project);
     Preview.loadProject(project);
     // Fit-to-width must run after the workspace is visible, otherwise
@@ -1362,7 +1840,7 @@ const EditorTab = (() => {
     refs.workspace.classList.toggle("hidden", !hasProject);
     const total = state.project ? TL.totalDuration(state.project) : 0;
     refs.exportBtn.disabled = !hasProject || total <= 0;
-    refs.deleteBtn.disabled = !state.selection.length;
+    refs.deleteBtn.disabled = !state.selection.length && !state.rangeSelection;
     refs.undoBtn.disabled = !History.canUndo();
     refs.redoBtn.disabled = !History.canRedo();
     refs.playPause.textContent = state.playing ? "⏸" : "▶";
@@ -1371,6 +1849,24 @@ const EditorTab = (() => {
     refs.projectName.value = state.project.name || "";
     refs.projectName.classList.toggle("dirty", state.dirty);
     refs.timecode.textContent = `${Time.format(state.playhead)} / ${Time.format(total)}`;
+    // Audio volume slider mirrors project.audioVolume; default to unity
+    // when missing (very old / pre-feature projects). Skip writing back
+    // while the user is dragging — would yank the slider mid-gesture.
+    {
+      const v = state.project.audioVolume != null ? state.project.audioVolume : 1;
+      const pct = Math.round(v * 100) + "%";
+      // Skip writing the slider value while the user is dragging it;
+      // otherwise the assignment would yank the thumb out from under
+      // the cursor mid-gesture.
+      if (refs.audioVolume && document.activeElement !== refs.audioVolume) {
+        refs.audioVolume.value = String(v);
+      }
+      if (refs.audioVolumePct) refs.audioVolumePct.textContent = pct;
+      // Button doubles as a live readout. Prefix "音量:" so the number
+      // reads as audio volume, not some random percentage on the track
+      // (without it users had to guess what the digits meant).
+      if (refs.audioVolumeBtn) refs.audioVolumeBtn.textContent = "音量: " + pct;
+    }
     Timeline.render(state);
   }
 
@@ -1388,16 +1884,23 @@ const EditorTab = (() => {
 
   function collectRefs() {
     return {
-      empty:       $("edEmpty"),
-      workspace:   $("edWorkspace"),
-      exportBtn:   $("edExport"),
-      deleteBtn:   $("edDelete"),
-      undoBtn:     $("edUndo"),
-      redoBtn:     $("edRedo"),
-      playPause:   $("edPlayPause"),
-      projectName: $("edProjectName"),
-      timecode:    $("edTimecode"),
-      scopeLabel:  $("edSplitScopeLabel"),
+      empty:              $("edEmpty"),
+      workspace:          $("edWorkspace"),
+      exportBtn:          $("edExport"),
+      deleteBtn:          $("edDelete"),
+      undoBtn:            $("edUndo"),
+      redoBtn:            $("edRedo"),
+      playPause:          $("edPlayPause"),
+      projectName:        $("edProjectName"),
+      timecode:           $("edTimecode"),
+      scopeLabel:         $("edSplitScopeLabel"),
+      // Volume controls — earlier omitted from collectRefs, which made
+      // the per-render audioVolumePct sync silently no-op (the popover
+      // readout stayed at 100% no matter the slider position).
+      audioVolume:        $("edAudioVolume"),
+      audioVolumePct:     $("edAudioVolumePct"),
+      audioVolumeBtn:     $("edAudioVolumeBtn"),
+      audioVolumePopover: $("edAudioVolumePopover"),
     };
   }
 

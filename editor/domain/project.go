@@ -36,6 +36,10 @@ type Project struct {
 	Source        Source         `json:"source"`
 	VideoClips    []Clip         `json:"videoClips,omitempty"`
 	AudioClips    []Clip         `json:"audioClips,omitempty"`
+	// AudioVolume is a linear gain applied to the entire audio track
+	// (0.0 = silent, 1.0 = unity). Drives both preview playback and
+	// export. 0 in JSON means "missing" — Migrate() upgrades it to 1.0.
+	AudioVolume   float64        `json:"audioVolume,omitempty"`
 	Export        ExportSettings `json:"export"`
 
 	// LegacyClips is a v1 field kept for migration only. When the repo
@@ -176,6 +180,7 @@ func NewProject(id, name string, src Source, now time.Time) *Project {
 			AudioCodec: "aac",
 			OutputName: name,
 		},
+		AudioVolume: 1.0,
 	}
 	if src.HasAudio {
 		p.AudioClips = []Clip{
@@ -195,7 +200,14 @@ func NewProject(id, name string, src Source, now time.Time) *Project {
 //
 // v2 → v3: Clip.ProgramStart is filled in by accumulation from 0, so old
 // stacked-clip projects render identically to before.
+//
+// AudioVolume default: missing (0 from JSON unmarshal) → 1.0 (unity gain).
+// Done unconditionally so even already-v3 projects without the field get
+// upgraded transparently.
 func (p *Project) Migrate() {
+	if p.AudioVolume <= 0 {
+		p.AudioVolume = 1.0
+	}
 	if p.SchemaVersion >= SchemaVersion {
 		p.LegacyClips = nil
 		return

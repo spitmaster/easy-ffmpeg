@@ -47,7 +47,7 @@ func (s *Server) handleAudioStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.OutputDir != "" {
+	if req.OutputDir != "" && !req.DryRun {
 		if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
 			writeErr(w, http.StatusBadRequest, "cannot create output dir: "+err.Error())
 			return
@@ -55,7 +55,8 @@ func (s *Server) handleAudioStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Merge "auto" strategy: probe inputs here and resolve to copy/reencode
-	// before dispatching to the pure builder.
+	// before dispatching to the pure builder. Done even on DryRun so the
+	// command shown matches what would actually run.
 	if req.Mode == "merge" && req.MergeStrategy == "auto" {
 		req.MergeStrategy = resolveMergeStrategy(req.InputPaths)
 	}
@@ -63,6 +64,24 @@ func (s *Server) handleAudioStart(w http.ResponseWriter, r *http.Request) {
 	result, err := BuildAudioArgs(req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	command := "ffmpeg " + strings.Join(result.Args, " ")
+
+	// DryRun: return command, don't start ffmpeg, don't check overwrite.
+	// Some builders (merge concat) write a temp list file as a side effect;
+	// run cleanup immediately on the dry-run path so we never leave temp
+	// files behind for an export the user might never confirm.
+	if req.DryRun {
+		if result.Cleanup != nil {
+			result.Cleanup()
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"dryRun":  true,
+			"command": command,
+		})
 		return
 	}
 
@@ -97,7 +116,7 @@ func (s *Server) handleAudioStart(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
-		"command": "ffmpeg " + strings.Join(result.Args, " "),
+		"command": command,
 	})
 }
 

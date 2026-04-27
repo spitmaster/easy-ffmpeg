@@ -37,16 +37,39 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 	if p.Export.OutputDir == "" || p.Export.OutputName == "" || p.Export.Format == "" {
 		return nil, "", errors.New("export: outputDir / outputName / format required")
 	}
+	// Leading-gap guard: only the **video** track must start at program
+	// time 0 — a black-screen prefix on the exported file is almost always
+	// a mistake. The audio track is allowed a leading gap (filled with
+	// silence); legitimate use case: pre-roll silence before the first
+	// spoken word. Mid-track gaps remain allowed on both tracks.
+	if hasVideo {
+		if t := earliestProgramStart(p.VideoClips); t > 1e-3 {
+			return nil, "", fmt.Errorf("视频轨道开头必须有内容：第一个 clip 从 %.2fs 开始，请把它拖到 0 秒再导出", t)
+		}
+	}
 	videoCodec := normalizeVideoCodec(p.Export.VideoCodec)
 	audioCodec := normalizeAudioCodec(p.Export.AudioCodec)
 	outPath := filepath.Join(p.Export.OutputDir, p.Export.OutputName+"."+p.Export.Format)
 
+	// Both tracks are padded to programDur with synthetic black / silence
+	// when shorter, so the output mp4's two streams have matching length.
+	// Without this the muxer writes a 5s video + 10s audio into one file
+	// and Chrome's <video> element (the Editor preview, and most native
+	// players) cuts off at the shorter stream — ending playback at video
+	// EOF even though the audio still has data.
+	programDur := 0.0
+	if v := trackDuration(p.VideoClips); v > programDur {
+		programDur = v
+	}
+	if a := trackDuration(p.AudioClips); a > programDur {
+		programDur = a
+	}
 	var parts []string
 	if hasVideo {
-		parts = append(parts, buildVideoTrackFilter(p.VideoClips, p.Source)...)
+		parts = append(parts, buildVideoTrackFilter(p.VideoClips, p.Source, programDur)...)
 	}
 	if hasAudio {
-		parts = append(parts, buildAudioTrackFilter(p.AudioClips)...)
+		parts = append(parts, buildAudioTrackFilter(p.AudioClips, p.AudioVolume, programDur)...)
 	}
 	filter := strings.Join(parts, ";")
 
@@ -61,6 +84,21 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 	return args, outPath, nil
 }
 
+// earliestProgramStart returns the smallest ProgramStart in the slice, or 0
+// for an empty track. Used by the export-time leading-gap guard.
+func earliestProgramStart(clips []Clip) float64 {
+	if len(clips) == 0 {
+		return 0
+	}
+	min := clips[0].ProgramStart
+	for _, c := range clips[1:] {
+		if c.ProgramStart < min {
+			min = c.ProgramStart
+		}
+	}
+	return min
+}
+
 // segmentPlan describes one segment on a track — either a real cut of the
 // source ("clip") or a synthetic fill ("gap"). The planner expands a track
 // of clips-plus-implicit-gaps into a flat slice that the filter builder can
@@ -72,8 +110,15 @@ type segmentPlan struct {
 	duration    float64 // when isGap
 }
 
-func planSegments(clips []Clip) []segmentPlan {
+// planSegments lays out one track as an alternating sequence of clip and
+// gap segments. When totalDur > track length, a trailing gap is appended
+// so the rendered stream matches the overall program duration — this is
+// what keeps the muxed mp4's two streams equal-length when one track was
+// edited shorter than the other.
+func planSegments(clips []Clip, totalDur float64) []segmentPlan {
 	if len(clips) == 0 {
+		// Pure trailing gap: caller decides whether to emit it (an empty
+		// track shouldn't get padded — it just isn't output at all).
 		return nil
 	}
 	sorted := append([]Clip(nil), clips...)
@@ -92,12 +137,16 @@ func planSegments(clips []Clip) []segmentPlan {
 		})
 		cursor = c.ProgramStart + c.Duration()
 	}
+	if totalDur > cursor+1e-3 {
+		plan = append(plan, segmentPlan{isGap: true, duration: totalDur - cursor})
+	}
 	return plan
 }
 
 // buildVideoTrackFilter produces the filter graph for the video track,
-// including synthetic black-frame segments for gaps between clips.
-func buildVideoTrackFilter(clips []Clip, src Source) []string {
+// including synthetic black-frame segments for gaps between clips and a
+// trailing black pad when the video track is shorter than totalDur.
+func buildVideoTrackFilter(clips []Clip, src Source, totalDur float64) []string {
 	w, h, fr := src.Width, src.Height, src.FrameRate
 	if w <= 0 {
 		w = 1920
@@ -108,7 +157,7 @@ func buildVideoTrackFilter(clips []Clip, src Source) []string {
 	if fr <= 0 {
 		fr = 30
 	}
-	segs := planSegments(clips)
+	segs := planSegments(clips, totalDur)
 	var parts []string
 	var refs []string
 	for i, seg := range segs {
@@ -141,9 +190,15 @@ func buildVideoTrackFilter(clips []Clip, src Source) []string {
 // buildAudioTrackFilter is the audio twin of buildVideoTrackFilter.
 // anullsrc fills gaps; aformat normalises both real and gap segments to
 // 48k/stereo/fltp so concat has matching inputs.
-func buildAudioTrackFilter(clips []Clip) []string {
+//
+// volume is a linear gain (1.0 = unity). When != 1.0, a trailing
+// `volume=X` filter is appended after concat by routing the concat
+// output through an intermediate label [a_pre] then into [a]. We avoid
+// the rename when volume == 1.0 so the filter graph for existing
+// projects stays byte-for-byte identical (test stability + readability).
+func buildAudioTrackFilter(clips []Clip, volume float64, totalDur float64) []string {
 	const audioFormat = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
-	segs := planSegments(clips)
+	segs := planSegments(clips, totalDur)
 	var parts []string
 	var refs []string
 	for i, seg := range segs {
@@ -161,10 +216,18 @@ func buildAudioTrackFilter(clips []Clip) []string {
 		}
 		refs = append(refs, label)
 	}
+	useVolume := volume > 0 && (volume < 0.999 || volume > 1.001)
+	concatOut := "[a]"
+	if useVolume {
+		concatOut = "[a_pre]"
+	}
 	parts = append(parts, fmt.Sprintf(
-		"%sconcat=n=%d:v=0:a=1[a]",
-		strings.Join(refs, ""), len(segs),
+		"%sconcat=n=%d:v=0:a=1%s",
+		strings.Join(refs, ""), len(segs), concatOut,
 	))
+	if useVolume {
+		parts = append(parts, fmt.Sprintf("[a_pre]volume=%s[a]", formatFloat(volume)))
+	}
 	return parts
 }
 

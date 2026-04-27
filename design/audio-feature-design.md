@@ -313,6 +313,7 @@ ffmpeg -y -i f1 -i f2 -i f3 \
   "sampleRate": 44100,     // 0 表示保持原始
   "channels": 2,           // 0 表示保持原始
   "overwrite": false,
+  "dryRun": false,         // true → 走完构建但不启 ffmpeg、不查 overwrite、不动文件;merge 临时 list 文件立即 cleanup
 
   // extract 额外
   "audioStreamIndex": 0,   // ffprobe 音频流内部序号
@@ -327,6 +328,7 @@ ffmpeg -y -i f1 -i f2 -i f3 \
 - 校验失败 → `400 { error: "..." }`
 - 同一 Job 已运行 → `409 { error: "another job is running" }`（与视频 Tab 冲突）
 - 目标已存在且未授权覆盖 → `409 { error:"file exists", existing:true, path:"..." }`
+- DryRun 成功 → `200 { ok:true, dryRun:true, command:"ffmpeg ..." }`(前端用此命令弹"即将执行"对话框,经用户确认后再不带 dryRun 重发)
 - 成功 → `200 { ok:true, command:"ffmpeg ..." }`
 
 ### 7.2 `POST /api/audio/cancel`
@@ -397,7 +399,7 @@ app.js
 | 合并重编码时某个输入损坏中途失败 | ffmpeg 自己会退出；走 `error` 事件；半成品文件保留不清理（与视频 Tab 对齐） |
 | 提取"直接拷贝"但后缀选错 | 后端用 ffprobe 校验 `codec_name` 兼容性；不兼容 → 400，提示改后缀或改"转码" |
 | 临时列表文件清理失败 | 日志输出 warn，不中断 |
-| 目标文件已存在 | 409 + 弹 `confirm`（与视频 Tab 同一条路径） |
+| 目标文件已存在 | 409 + 自绘 `Confirm.overwrite` 对话框(替代浏览器原生 confirm,与视频 / 编辑器 Tab 同一条路径) |
 
 ---
 

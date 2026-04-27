@@ -97,7 +97,9 @@ func TestBuildExportArgs_NoAudio(t *testing.T) {
 }
 
 func TestBuildExportArgs_IndependentTrackLengths(t *testing.T) {
-	// Video track has 2 clips, audio track has 3 — tracks are independent.
+	// Video track has 2 clips ending at 15s, audio track has 3 ending at
+	// 25s. The shorter track (video here) is auto-padded to programDur,
+	// so its concat count gains one trailing gap segment (=> n=3).
 	p := baseProject()
 	p.AudioClips = []Clip{
 		{ID: "a1", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
@@ -109,11 +111,48 @@ func TestBuildExportArgs_IndependentTrackLengths(t *testing.T) {
 		t.Fatal(err)
 	}
 	filter := args[indexOfStr(args, "-filter_complex")+1]
-	if !strings.Contains(filter, "concat=n=2:v=1:a=0[v]") {
-		t.Error("video concat should be n=2")
+	// 2 video clips + 10s trailing black pad to match audio's 25s
+	if !strings.Contains(filter, "concat=n=3:v=1:a=0[v]") {
+		t.Errorf("video concat should be n=3 (2 clips + trailing pad), got: %s", filter)
 	}
+	// 3 audio clips, no padding needed (already the longest track)
 	if !strings.Contains(filter, "concat=n=3:v=0:a=1[a]") {
-		t.Error("audio concat should be n=3")
+		t.Errorf("audio concat should be n=3, got: %s", filter)
+	}
+	// The trailing pad should be 10s (25 - 15) of black at video's
+	// resolution and frame rate.
+	if !strings.Contains(filter, "color=c=black:s=1920x1080:r=30:d=10") {
+		t.Errorf("missing trailing black pad on video, got: %s", filter)
+	}
+}
+
+// Twin scenario: video is the longer track, audio is shorter — audio
+// gets padded with anullsrc at the end so the final mp4's audio stream
+// matches the video stream length. Without this, browsers like Chrome
+// truncate playback at the shorter stream's end (preview cut-off bug).
+func TestBuildExportArgs_AudioShorterThanVideo(t *testing.T) {
+	p := baseProject()
+	p.VideoClips = []Clip{
+		{ID: "v1", SourceStart: 0, SourceEnd: 30, ProgramStart: 0}, // 30s video
+	}
+	p.AudioClips = []Clip{
+		{ID: "a1", SourceStart: 0, SourceEnd: 10, ProgramStart: 0}, // 10s audio
+	}
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := args[indexOfStr(args, "-filter_complex")+1]
+	// Video: 1 clip, no pad → n=1
+	if !strings.Contains(filter, "concat=n=1:v=1:a=0[v]") {
+		t.Errorf("video concat should be n=1 (no pad), got: %s", filter)
+	}
+	// Audio: 1 clip + 20s trailing silence → n=2
+	if !strings.Contains(filter, "concat=n=2:v=0:a=1[a]") {
+		t.Errorf("audio concat should be n=2 (1 clip + trailing silence), got: %s", filter)
+	}
+	if !strings.Contains(filter, "anullsrc=r=48000:cl=stereo:d=20") {
+		t.Errorf("missing trailing silence on audio, got: %s", filter)
 	}
 }
 
@@ -155,6 +194,130 @@ func TestBuildExportArgs_Errors(t *testing.T) {
 	}
 }
 
+func TestBuildExportArgs_RejectsVideoLeadingGap(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Project)
+	}{
+		{
+			name: "video track first clip starts late",
+			mutate: func(p *Project) {
+				p.VideoClips = []Clip{
+					{ID: "v1", SourceStart: 0, SourceEnd: 10, ProgramStart: 2.5},
+				}
+			},
+		},
+		{
+			name: "out-of-order video clips: earliest still leading-gap",
+			mutate: func(p *Project) {
+				// Earliest by ProgramStart is the second one (0.7s) — should still trip.
+				p.VideoClips = []Clip{
+					{ID: "v1", SourceStart: 5, SourceEnd: 10, ProgramStart: 5},
+					{ID: "v2", SourceStart: 0, SourceEnd: 1, ProgramStart: 0.7},
+				}
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := baseProject()
+			c.mutate(p)
+			_, _, err := BuildExportArgs(p)
+			if err == nil {
+				t.Fatal("expected video leading-gap error")
+			}
+			if !strings.Contains(err.Error(), "视频轨道开头") {
+				t.Errorf("error message = %q, want to contain %q", err.Error(), "视频轨道开头")
+			}
+		})
+	}
+}
+
+// Audio gets a free pass on leading gaps — pre-roll silence is a valid
+// edit. Only the video track is gated.
+func TestBuildExportArgs_AcceptsAudioLeadingGap(t *testing.T) {
+	p := baseProject()
+	p.VideoClips = []Clip{
+		{ID: "v1", SourceStart: 0, SourceEnd: 10, ProgramStart: 0},
+	}
+	p.AudioClips = []Clip{
+		{ID: "a1", SourceStart: 0, SourceEnd: 8, ProgramStart: 1.5},
+	}
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatalf("audio leading gap should be allowed, got: %v", err)
+	}
+	filter := args[indexOfStr(args, "-filter_complex")+1]
+	// Audio filter graph should include a 1.5s silent prefix.
+	if !strings.Contains(filter, "anullsrc=r=48000:cl=stereo:d=1.5") {
+		t.Errorf("missing silent leading segment in audio chain: %s", filter)
+	}
+}
+
+func TestBuildExportArgs_AudioVolume(t *testing.T) {
+	t.Run("unity volume emits no volume filter", func(t *testing.T) {
+		p := baseProject()
+		p.AudioVolume = 1.0
+		args, _, err := BuildExportArgs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter := args[indexOfStr(args, "-filter_complex")+1]
+		if strings.Contains(filter, "volume=") {
+			t.Errorf("unity volume should not emit volume filter, got: %s", filter)
+		}
+		if !strings.Contains(filter, "concat=n=2:v=0:a=1[a]") {
+			t.Errorf("audio chain should end at [a], got: %s", filter)
+		}
+	})
+	t.Run("non-unity volume routes via [a_pre] then volume filter", func(t *testing.T) {
+		p := baseProject()
+		p.AudioVolume = 0.5
+		args, _, err := BuildExportArgs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter := args[indexOfStr(args, "-filter_complex")+1]
+		if !strings.Contains(filter, "concat=n=2:v=0:a=1[a_pre]") {
+			t.Errorf("concat should output to [a_pre], got: %s", filter)
+		}
+		if !strings.Contains(filter, "[a_pre]volume=0.5[a]") {
+			t.Errorf("volume filter should map [a_pre] → [a], got: %s", filter)
+		}
+	})
+	t.Run("zero volume falls back to unity (treated as missing)", func(t *testing.T) {
+		// AudioVolume == 0 means "field absent in JSON"; export should
+		// behave as unity gain so older projects without the field don't
+		// silently mute themselves.
+		p := baseProject()
+		p.AudioVolume = 0
+		args, _, err := BuildExportArgs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter := args[indexOfStr(args, "-filter_complex")+1]
+		if strings.Contains(filter, "volume=") {
+			t.Errorf("zero AudioVolume should be treated as unity, got: %s", filter)
+		}
+	})
+}
+
+func TestBuildExportArgs_AcceptsMidGap(t *testing.T) {
+	// Mid-track gaps are still allowed — only the video leading position is gated.
+	p := baseProject()
+	p.VideoClips = []Clip{
+		{ID: "v1", SourceStart: 0, SourceEnd: 5, ProgramStart: 0},
+		{ID: "v2", SourceStart: 10, SourceEnd: 15, ProgramStart: 8},
+	}
+	p.AudioClips = []Clip{
+		{ID: "a1", SourceStart: 0, SourceEnd: 5, ProgramStart: 0},
+		{ID: "a2", SourceStart: 10, SourceEnd: 15, ProgramStart: 8},
+	}
+	if _, _, err := BuildExportArgs(p); err != nil {
+		t.Fatalf("mid-gap should be allowed, got: %v", err)
+	}
+}
+
 func TestBuildExportArgs_GapInsertsBlackAndSilence(t *testing.T) {
 	// Two clips with a 5-second gap between them on both tracks. The filter
 	// graph should include a black-frame segment and a silent-audio segment
@@ -186,27 +349,10 @@ func TestBuildExportArgs_GapInsertsBlackAndSilence(t *testing.T) {
 	}
 }
 
-func TestBuildExportArgs_LeadingGap(t *testing.T) {
-	// A clip starting at ProgramStart=3 with no earlier clip means the
-	// timeline begins with 3s of black + silence.
-	p := baseProject()
-	p.VideoClips = []Clip{
-		{ID: "v1", SourceStart: 0, SourceEnd: 10, ProgramStart: 3},
-	}
-	p.AudioClips = nil
-	p.Source.HasAudio = false
-	args, _, err := BuildExportArgs(p)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	filter := args[indexOfStr(args, "-filter_complex")+1]
-	if !strings.Contains(filter, "color=c=black:s=1920x1080:r=30:d=3") {
-		t.Errorf("missing leading black segment, filter: %s", filter)
-	}
-	if !strings.Contains(filter, "concat=n=2:v=1:a=0[v]") {
-		t.Errorf("video concat should be n=2 (gap + clip): %s", filter)
-	}
-}
+// Leading gaps used to silently produce a black/silent prefix. Product
+// decision: editing keeps the gap permitted, but export now refuses with
+// a clear message — the dedicated tests for that live in
+// TestBuildExportArgs_RejectsLeadingGap.
 
 func TestBuildExportArgs_UnorderedClips(t *testing.T) {
 	// Clips provided out of ProgramStart order should still render correctly

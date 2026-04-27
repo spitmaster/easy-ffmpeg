@@ -17,8 +17,13 @@ type createProjectRequest struct {
 
 // exportRequest is the JSON body for POST /export.
 type exportRequest struct {
-	ProjectID string                `json:"projectId"`
-	Export    *domain.ExportSettings `json:"export"` // optional override; if nil, use project.Export
+	ProjectID string                 `json:"projectId"`
+	Export    *domain.ExportSettings `json:"export"`    // optional override; if nil, use project.Export
+	Overwrite bool                   `json:"overwrite"` // if false and outputPath exists, server returns 409
+	// DryRun returns the would-be command without starting ffmpeg or
+	// checking overwrite. Front-end uses it to populate the
+	// pre-execution confirmation dialog.
+	DryRun bool `json:"dryRun"`
 }
 
 // probeRequest is the JSON body for POST /probe.

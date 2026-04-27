@@ -1,6 +1,6 @@
-# 视频剪辑器模块架构
+# 单视频剪辑器模块架构
 
-> 本文档定义"视频剪辑器"的代码结构、包划分、接口契约、依赖注入方式、以及"独立编译"的实现路径。
+> 本文档定义"单视频剪辑器"的代码结构、包划分、接口契约、依赖注入方式、以及"独立编译"的实现路径。
 >
 > 配套产品文档：[editor-feature-design.md](editor-feature-design.md)。
 >
@@ -252,6 +252,13 @@ func (m *Module) StaticAssets() http.FileSystem {
 
 ```go
 // domain/project.go
+//
+// SchemaVersion 演进：
+//   v1: 单一 Clips []Clip，覆盖音视频两轨
+//   v2: 拆成 VideoClips + AudioClips 独立编辑
+//   v3: Clip 加 ProgramStart 字段支持任意位置 + 空隙；Project 加 AudioVolume
+const SchemaVersion = 3
+
 type Project struct {
     SchemaVersion int
     ID            string
@@ -259,15 +266,22 @@ type Project struct {
     CreatedAt     time.Time
     UpdatedAt     time.Time
     Source        Source
-    Clips         []Clip
+    VideoClips    []Clip
+    AudioClips    []Clip
+    AudioVolume   float64        // 线性增益 0–2.0；默认 1.0；驱动预览 GainNode + 导出 volume= 滤镜
     Export        ExportSettings
+    LegacyClips   []Clip         // 仅 v1 解码用，Migrate 后 nil
 }
 
 type Clip struct {
-    ID          string
-    SourceStart float64  // seconds
-    SourceEnd   float64
+    ID           string
+    SourceStart  float64  // 源时间秒,起点
+    SourceEnd    float64  // 源时间秒,终点（开区间）
+    ProgramStart float64  // 节目时间秒,该 clip 在轨道上的起点；v2→v3 自动按累加补齐
 }
+
+func (c Clip) Duration() float64   { return c.SourceEnd - c.SourceStart }
+func (c Clip) ProgramEnd() float64 { return c.ProgramStart + c.Duration() }
 
 type Source struct {
     Path        string
@@ -288,11 +302,19 @@ type ExportSettings struct {
     OutputName  string
 }
 
-// ProgramDuration 节目总时长（所有 clip 时长之和）
+// VideoDuration / AudioDuration 各自轨道的最长 ProgramEnd（leading gap 计入）
+func (p *Project) VideoDuration() float64 { ... }
+func (p *Project) AudioDuration() float64 { ... }
+
+// ProgramDuration 节目总时长 = 两轨之最大值
 func (p *Project) ProgramDuration() float64 { ... }
 
 // Validate 返回所有不变量违反（调用方决定是报错还是忽略）
 func (p *Project) Validate() []error { ... }
+
+// Migrate v1→v2 把 LegacyClips 拆成两轨；v2→v3 用累加给 ProgramStart 填默认值；
+// 任意版本 + AudioVolume<=0（缺省）→ 升到 1.0。多次调用幂等。
+func (p *Project) Migrate() { ... }
 ```
 
 ```go
@@ -307,9 +329,25 @@ func TrimRight(clips []Clip, id string, newSourceEnd float64) ([]Clip, error)
 ```go
 // domain/export.go
 func BuildExportArgs(p *Project) (args []string, outputPath string, err error)
+
+// 内部辅助：
+//   programDur = max(VideoDuration, AudioDuration)
+//   planSegments(clips, totalDur) 在轨道末尾自动追加 trailing gap，
+//     当 cursor < totalDur — 短轨用 color=c=black（视频）/ anullsrc（音频）补齐到 programDur
+//   buildVideoTrackFilter(clips, src, totalDur)
+//   buildAudioTrackFilter(clips, volume, totalDur)
+//     volume != 1.0 时把 concat 输出从 [a] 改为 [a_pre]，再追加 [a_pre]volume=X[a]
 ```
 
-- 这三个文件合起来 < 500 行
+**导出期校验**：
+
+- 视频轨开头不能留空：`earliestProgramStart(VideoClips) > 0` → 返回错误。**音频轨开头允许 leading gap**（pre-roll 静音是常见用法，filter graph 用 `anullsrc` 自动填补）
+- 没有 clip：错误
+- 缺 `OutputDir / OutputName / Format`：错误
+
+**两轨自动等长（防止预览/播放器在短流处停下）**：`programDur` 是 `max(VideoDuration, AudioDuration)`,两条 filter 链都按这个长度 pad。Chrome `<video>` 元素遇到一长一短的两个流会在短流处停止——padding 后两个流长度严格一致,所有播放器一致播完。
+
+- 这三个文件合起来 < 700 行
 - 覆盖测试率目标 ≥ 90%（没有 I/O，纯表驱动）
 
 ### 5.2 `editor/ports/`
@@ -409,20 +447,51 @@ func (r *Router) Register(mux *http.ServeMux, prefix string) {
 }
 ```
 
+**导出请求 DTO（与 convert / audio 同形）**：
+
+```go
+type exportRequest struct {
+    ProjectID string                 `json:"projectId"`
+    Export    *domain.ExportSettings `json:"export"`    // 可选 override，不 persist
+    Overwrite bool                   `json:"overwrite"` // false + outputPath 已存在 → 409 + existing
+    DryRun    bool                   `json:"dryRun"`    // true → 返回命令但不启动 ffmpeg
+}
+```
+
+`handlers_export.go` 流程：参数校验 → 读 Project → 合并 Export overrides → `BuildExportArgs` → 若 `DryRun` 直接返回 `{ok, dryRun, command, outputPath}` 不动文件不启进程；否则若 `!Overwrite && os.Stat(outPath) ok` 返回 409 + `existing:true`；否则 `runner.Start`。和 `/api/convert/start`、`/api/audio/start` 协议对齐(共享同一份 `Confirm` + `createJobPanel.start` 前端流程)。
+
 ### 5.5 `editor/web/`
 
 前端结构对应 PRD §5.1：
 
 ```js
 // editor.js — IIFE 模块
-const EditorStore = (() => { /* 发布订阅、commit、history */ })();
+const EditorStore = (() => { /* 发布订阅、commit、history、rangeSelection */ })();
 const EditorApi   = (() => { /* fetch wrappers: listProjects / ... */ })();
-const Preview     = (() => { /* <video> + 节目时间映射 */ })();
-const Timeline    = (() => { /* DOM 渲染 + 拖拽 */ })();
-const EditorTab   = (() => { /* init、顶栏、全局快捷键 */ })();
+const Preview     = (() => { /* 双 element：muted <video> + <audio>;
+                                WebAudio GainNode 接通 audio,
+                                gain.value = project.audioVolume(0–2.0);
+                                gap clock 用 rAF 驱动播放头穿过空隙时
+                                video.classList.add("in-gap") 显黑屏 */ })();
+const Timeline    = (() => { /* DOM 渲染 + 三列 grid（label/actions/scroll）
+                                + clip 拖拽（reorder/trim）
+                                + 右键拖刻度尺定义 rangeSelection
+                                + 大游标 / 单轨小游标 */ })();
+const ProjectsModal = (() => { /* 剪辑记录列表 */ })();
+const ExportModal   = (() => { /* 导出配置 + 启动 panel.start，传 totalDurationSec */ })();
+const TimelineOps   = (() => { /* split / delete (识别 rangeSelection)；undo/redo */ })();
+const EditorTab     = (() => { /* init、顶栏、全局快捷键 */ })();
 
 window.EditorTab = EditorTab;  // 暴露给 app.js 的 init 序列
 ```
+
+**Preview 模块关键交互**：
+
+- WebAudio gain pipeline (懒初始化):`MediaElementSource(<audio>) → GainNode → destination`,`gain.value = audioVolume`,`<audio>.volume` 名存实亡。`createMediaElementSource` 抛错时退化到 `audio.volume = min(1, v)`,预览静默封顶 100%
+- Gap clock：播放头穿过视频轨空隙(包括尾部空隙、leading silence 在视频轨长于音频时同样),`<video>` 暂停 + `.in-gap` 类隐藏(容器 `#0b0b0b` 透出黑底);`requestAnimationFrame` 按真实时间推进 `playhead`;穿入下一段视频 clip 时把 `<video>.currentTime` 设到对应源时间并恢复播放;到达节目总长统一 pause
+- `<video>` 的 `ended` 事件智能化：源 EOF 时若 `playhead < totalDuration`(音频还有内容),不直接停,挂 `.in-gap` + `startGapClock()` 接力,音频继续播完
+- 播放头形态：`splitScope=both` → 大游标(跨双轨菱形头);`splitScope=video/audio` → 该轨内小游标。**播放一次即把 splitScope 永久提升为 both**,大游标不会因为暂停退回单轨;要恢复单轨指示必须显式点击单条轨道空白
+- 范围选区(`rangeSelection: {start, end}`):右键在刻度尺上拖定义,半透明黄虚线框;`splitAtPlayhead` 见到选区按 `splitScope=both` 在两端各切一刀;`deleteSelection` 见到选区按 `splitScope=both` 把 `[start, end]` 整段碾空(carveRange 函数:整段在内丢弃,跨边界修剪,跨整段拆两段),保留空隙不左移;Esc / 再次右键(零拖动)清除选区
 
 `app.js` 的改动：在 init 序列里增加 `EditorTab.init()`，其它不动。
 

@@ -107,10 +107,9 @@ easy-ffmpeg/
 ├── config/config.go                  用户目录/配置持久化
 ├── tools/
 │   ├── build_icon.go                 开发期：生成 Windows 资源文件
-│   ├── build_macapp.go               把 macOS 二进制包装成 .app Bundle
 │   └── download_windows.go           历史：从 gyan.dev 下载 ffmpeg（已被 7z 方案取代）
 ├── assets/icon.svg / icon.icns       品牌图标源文件
-├── build.bat / build.sh              一键四平台构建 + macOS .app 封装
+├── build.bat / build.sh              一键四平台构建（Windows / macOS arm64+amd64 / Linux 原生二进制）
 ├── design/                           本文档
 └── dist/                             构建产物
 ```

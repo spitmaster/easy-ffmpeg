@@ -22,7 +22,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="convert">视频转换</button>
     <button class="tab" data-tab="audio">音频处理</button>
-    <button class="tab" data-tab="editor">视频剪辑</button>
+    <button class="tab" data-tab="editor">单视频剪辑</button>
     <button class="tab" data-tab="info" disabled>媒体信息</button>
     <button class="tab" data-tab="settings" disabled>设置</button>
   </nav>
@@ -86,6 +86,11 @@
         <button id="startBtn" class="btn btn-primary">开始转码</button>
         <button id="cancelBtn" class="btn btn-danger" disabled>取消</button>
         <span id="jobState" class="muted">空闲</span>
+      </div>
+
+      <div id="progressWrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+        <span id="progressText" class="progress-text">0%</span>
       </div>
 
       <div class="field">
@@ -323,6 +328,11 @@
         <span id="audioJobState" class="muted">空闲</span>
       </div>
 
+      <div id="audioProgressWrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="audioProgressFill" class="progress-fill"></div></div>
+        <span id="audioProgressText" class="progress-text">0%</span>
+      </div>
+
       <div class="field">
         <label>处理日志</label>
         <div id="audioLog" class="log"></div>
@@ -335,6 +345,8 @@
     </section>
 
     <section class="panel hidden" id="panel-editor">
+      <!-- 主功能列：顶栏 + 空态 + 工作区。导出时日志面板在这一列右侧并存。 -->
+      <div class="editor-content">
       <!-- 顶栏 -->
       <div class="editor-topbar">
         <button class="btn" id="edOpenVideo">📂 打开视频</button>
@@ -368,10 +380,6 @@
           <button class="btn btn-icon" id="edNextClip" title="下一片段 (→)">⏭</button>
           <span class="editor-timecode" id="edTimecode">00:00:00.000 / 00:00:00.000</span>
           <div class="spacer"></div>
-          <div class="editor-volume">
-            <button id="edMute" class="btn btn-icon" title="静音切换 (M)">🔊</button>
-            <input type="range" id="edVolume" min="0" max="1" step="0.05" value="1" />
-          </div>
         </div>
 
         <!-- 时间轴 -->
@@ -381,6 +389,14 @@
             <div class="timeline-label-ruler"></div>
             <div class="timeline-label video">🎬 视频</div>
             <div class="timeline-label audio">🔊 音频</div>
+          </div>
+          <!-- 每条轨道的快捷操作列：与轨道一一对齐，目前只放音频音量按钮 -->
+          <div class="timeline-track-actions">
+            <div class="timeline-track-action-cell ruler"></div>
+            <div class="timeline-track-action-cell video"></div>
+            <div class="timeline-track-action-cell audio">
+              <button id="edAudioVolumeBtn" class="audio-volume-toggle" title="音频音量（点击调节）" aria-haspopup="true" aria-expanded="false">音量: 100%</button>
+            </div>
           </div>
           <!-- 右侧滚动区 -->
           <div class="timeline-scroll" id="edTimelineScroll">
@@ -393,6 +409,8 @@
             </div>
             <!-- 大游标覆盖 ruler + 两轨 -->
             <div class="timeline-playhead timeline-playhead-big" id="edPlayheadBig" style="display:none"></div>
+            <!-- 右键拖出来的时间范围选区 -->
+            <div class="timeline-range-selection" id="edRangeSel" style="display:none"></div>
           </div>
         </div>
 
@@ -408,24 +426,90 @@
         </div>
       </div>
 
-      <!-- 导出日志面板（复用 JobBus） -->
-      <div class="editor-export-status hidden" id="edExportStatus">
-        <div class="field">
-          <label>导出日志</label>
-          <div id="edExportLog" class="log"></div>
-          <div class="action-row">
-            <button class="btn btn-danger" id="edExportCancelBtn" disabled>取消</button>
-            <span id="edExportState" class="muted">空闲</span>
-          </div>
-          <div class="finish-bar hidden" id="edExportFinishBar">
-            <span id="edExportFinishText"></span>
-            <div class="spacer"></div>
-            <button id="edExportFinishReveal" class="btn hidden">📂 打开文件夹</button>
-          </div>
+      </div>
+
+      <!-- 导出日志面板：与 .editor-content 平级，导出启动时从整个剪辑功能区
+           右侧滑入并占满垂直高度；工作区不被挤压（main 宽度同步放宽）。 -->
+      <aside class="editor-export-status hidden" id="edExportStatus">
+        <div class="editor-export-header">
+          <span class="editor-export-title">导出日志</span>
+          <span id="edExportState" class="muted">空闲</span>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost editor-export-close" id="edExportClosePanel" title="关闭日志面板">×</button>
         </div>
+        <div id="edProgressWrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="edProgressFill" class="progress-fill"></div></div>
+          <span id="edProgressText" class="progress-text">0%</span>
+        </div>
+        <div id="edExportLog" class="log"></div>
+        <div class="action-row">
+          <button class="btn btn-danger" id="edExportCancelBtn" disabled>取消</button>
+        </div>
+        <div class="finish-bar hidden" id="edExportFinishBar">
+          <span id="edExportFinishText"></span>
+          <div class="spacer"></div>
+          <button id="edExportFinishReveal" class="btn hidden">📂 打开文件夹</button>
+        </div>
+      </aside>
+
+      <!-- 音频音量浮窗：position:fixed 渲染在视口顶层，避免被时间轴的
+           overflow:hidden 裁掉。打开时 JS 计算坐标贴到触发按钮下方/上方。
+           三段刻度(200/100/0) 与垂直滑块行高对齐，下方大号读数实时跟随。 -->
+      <div class="audio-volume-popover hidden" id="edAudioVolumePopover" role="dialog" aria-label="音频音量">
+        <div class="avp-title">音频音量</div>
+        <div class="avp-track">
+          <div class="avp-marks">
+            <span class="avp-mark top">200%</span>
+            <span class="avp-mark mid">100%</span>
+            <span class="avp-mark bot">0%</span>
+          </div>
+          <input type="range" id="edAudioVolume"
+                 orient="vertical" min="0" max="2" step="0.01" value="1"
+                 aria-label="音频音量（拖动调节，0–200%）" />
+        </div>
+        <div class="avp-readout" id="edAudioVolumePct">100%</div>
       </div>
     </section>
   </main>
+
+  <!-- 通用覆盖确认弹窗（替代浏览器原生 confirm，所有 Tab 共享） -->
+  <div class="modal-backdrop hidden" id="confirmOverwriteBackdrop">
+    <div class="modal modal-confirm" role="dialog" aria-labelledby="confirmOverwriteTitle">
+      <div class="modal-header">
+        <h3 id="confirmOverwriteTitle">目标文件已存在</h3>
+        <button class="btn btn-ghost" id="confirmOverwriteClose" title="关闭" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-message">是否覆盖现有文件？</p>
+        <div class="confirm-path" id="confirmOverwritePath"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="confirmOverwriteCancel">取消</button>
+        <button class="btn btn-primary" id="confirmOverwriteOk">覆盖</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 命令预览/确认弹窗：导出前显示真实将执行的 ffmpeg 命令，用户确认后再触发实际执行 -->
+  <div class="modal-backdrop hidden" id="confirmCommandBackdrop">
+    <div class="modal modal-confirm modal-command" role="dialog" aria-labelledby="confirmCommandTitle">
+      <div class="modal-header">
+        <h3 id="confirmCommandTitle">即将执行</h3>
+        <button class="btn btn-ghost" id="confirmCommandClose" title="关闭" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-message">下列 ffmpeg 命令将被执行，确认后开始：</p>
+        <pre class="confirm-command" id="confirmCommandText" tabindex="0" title="点击复制"></pre>
+        <span class="confirm-command-hint muted" id="confirmCommandHint">点击命令框可复制</span>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="confirmCommandCopy" type="button">📋 复制</button>
+        <div class="spacer"></div>
+        <button class="btn" id="confirmCommandCancel">取消</button>
+        <button class="btn btn-primary" id="confirmCommandOk">开始执行</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 剪辑记录模态框 -->
   <div class="modal-backdrop hidden" id="edProjectsBackdrop">

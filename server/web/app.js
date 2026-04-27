@@ -248,12 +248,146 @@ const Picker = (() => {
     });
     el.cancel.addEventListener("click", () => close(null));
     el.close.addEventListener("click", () => close(null));
-    el.backdrop.addEventListener("click", (e) => {
-      if (e.target === el.backdrop) close(null);
-    });
+    // Backdrop click no longer closes the picker — too easy to dismiss
+    // by accident after navigating into a folder. × / 取消 / Esc are
+    // the explicit dismissal paths.
   }
 
   return { init, open };
+})();
+
+// ============================================================
+//  Confirm：自绘的弹窗，替代浏览器原生 window.confirm。
+//  返回 Promise<boolean>，调用方可以直接 await。Esc / 点背景 = 取消，
+//  Enter = 确认，焦点默认落在主按钮上。
+// ============================================================
+
+const Confirm = (() => {
+  // Two distinct dialogs share the same controller — overwrite and
+  // command — because both are "yes/no with some content"; multiplexing
+  // them through one resolver/state is simpler than wiring two parallel
+  // copies of the same listeners. `current` records which one is open
+  // so the global keydown handler routes Esc/Enter to the right modal.
+  let current = null;
+  let pending = null;
+  let lastFocused = null;
+
+  // overwrite-modal refs
+  let owBackdrop = null, owOk = null, owCancel = null, owClose = null, owPath = null;
+  // command-modal refs
+  let cmdBackdrop = null, cmdOk = null, cmdCancel = null, cmdClose = null,
+      cmdText = null, cmdCopy = null, cmdHint = null;
+
+  function init() {
+    owBackdrop = $("confirmOverwriteBackdrop");
+    owOk       = $("confirmOverwriteOk");
+    owCancel   = $("confirmOverwriteCancel");
+    owClose    = $("confirmOverwriteClose");
+    owPath     = $("confirmOverwritePath");
+    cmdBackdrop = $("confirmCommandBackdrop");
+    cmdOk       = $("confirmCommandOk");
+    cmdCancel   = $("confirmCommandCancel");
+    cmdClose    = $("confirmCommandClose");
+    cmdText     = $("confirmCommandText");
+    cmdCopy     = $("confirmCommandCopy");
+    cmdHint     = $("confirmCommandHint");
+    if (owBackdrop) {
+      owOk.addEventListener("click", () => settle(true));
+      owCancel.addEventListener("click", () => settle(false));
+      owClose.addEventListener("click", () => settle(false));
+      // No backdrop-click-to-close: an accidental click outside the
+      // dialog is too easy to do and would silently cancel an export
+      // the user was about to confirm. Close button + Esc are the
+      // explicit dismissal paths.
+    }
+    if (cmdBackdrop) {
+      cmdOk.addEventListener("click", () => settle(true));
+      cmdCancel.addEventListener("click", () => settle(false));
+      cmdClose.addEventListener("click", () => settle(false));
+      // The pre block is the primary copy affordance — clicking anywhere
+      // on it copies the whole command. The button mirrors the action.
+      cmdText.addEventListener("click", copyCurrentCommand);
+      cmdCopy.addEventListener("click", copyCurrentCommand);
+    }
+    // Single global keydown listener: routes to whichever dialog is open.
+    // Enter on the command pre would otherwise fight the OK button's
+    // implicit submission; we own it explicitly.
+    document.addEventListener("keydown", (e) => {
+      if (!current) return;
+      if (e.key === "Escape") { e.preventDefault(); settle(false); }
+      else if (e.key === "Enter" && e.target !== cmdText) { e.preventDefault(); settle(true); }
+    });
+  }
+
+  // Show the overwrite dialog and resolve to the user's choice.
+  function overwrite(path) {
+    if (!owBackdrop) return Promise.resolve(window.confirm("目标文件已存在，是否覆盖？\n\n" + (path || "")));
+    if (pending) settle(false);
+    owPath.textContent = path || "";
+    owBackdrop.classList.remove("hidden");
+    current = "overwrite";
+    lastFocused = document.activeElement;
+    requestAnimationFrame(() => owOk.focus());
+    return new Promise((resolve) => { pending = resolve; });
+  }
+
+  // Show the command preview / confirmation dialog. Resolves true when
+  // the user clicks "开始执行", false on cancel/Esc/backdrop click.
+  function command(cmd) {
+    if (!cmdBackdrop) return Promise.resolve(window.confirm("即将执行：\n\n" + (cmd || "")));
+    if (pending) settle(false);
+    cmdText.textContent = cmd || "";
+    cmdHint.textContent = "点击命令框可复制";
+    cmdHint.classList.remove("copied");
+    cmdBackdrop.classList.remove("hidden");
+    current = "command";
+    lastFocused = document.activeElement;
+    requestAnimationFrame(() => cmdOk.focus());
+    return new Promise((resolve) => { pending = resolve; });
+  }
+
+  async function copyCurrentCommand() {
+    const text = cmdText.textContent;
+    let ok = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {}
+    if (!ok) {
+      // Fallback for older runtimes / non-secure contexts.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        ok = true;
+      } catch {}
+    }
+    cmdHint.textContent = ok ? "✓ 已复制" : "✗ 复制失败（请手动选择）";
+    cmdHint.classList.toggle("copied", ok);
+  }
+
+  function settle(value) {
+    if (!current) return;
+    if (current === "overwrite") owBackdrop.classList.add("hidden");
+    if (current === "command")   cmdBackdrop.classList.add("hidden");
+    current = null;
+    if (lastFocused && typeof lastFocused.focus === "function") {
+      try { lastFocused.focus(); } catch {}
+    }
+    lastFocused = null;
+    const r = pending;
+    pending = null;
+    if (r) r(value);
+  }
+
+  return { init, overwrite, command };
 })();
 
 // ============================================================
@@ -290,6 +424,7 @@ const JobBus = (() => {
 function createJobPanel({
   logEl, stateEl, startBtn, cancelBtn,
   finishBar, finishText, finishRevealBtn,
+  progressWrap, progressFill, progressText,
   cancelUrl,
   runningLabel = "处理中...",
   idleLabel = "空闲",
@@ -298,10 +433,26 @@ function createJobPanel({
   cancelledLabel = "! 已取消",
 }) {
   const PROGRESS_RE = /^(frame=|size=|video:|Lsize=)/;
+  // Total duration auto-detection: ffmpeg prints "Duration: HH:MM:SS.ms"
+  // exactly once per input on stderr, before any progress lines.
+  const DUR_RE  = /Duration:\s*(\d+):(\d+):([\d.]+)/;
+  // time= appears in every progress line, monotonically increasing in
+  // output time; this matches what we want even when the input is being
+  // trimmed (output time, not source time).
+  const TIME_RE = /time=(\d+):(\d+):([\d.]+)/;
   let owning = false;
   let lastOutputPath = null;
+  // Total seconds for the current job. May be set via panel.start({totalDurationSec})
+  // (preferred — known up-front, e.g. editor's program time) or auto-discovered
+  // from "Duration:" lines (fallback for convert/audio).
+  let totalSec = 0;
 
   function appendLog(text, cls) {
+    // Drive the progress bar from the same lines we render in the log —
+    // saves an extra event channel. Duration is parsed once (lazily, in
+    // case totalSec was already passed in via start()), time= is parsed
+    // every line so the bar tracks live progress.
+    if (!cls) parseForProgress(text);
     const isProgress = !cls && PROGRESS_RE.test(text);
     if (isProgress) {
       const last = logEl.lastElementChild;
@@ -321,6 +472,29 @@ function createJobPanel({
       logEl.appendChild(line);
     }
     requestAnimationFrame(() => { logEl.scrollTop = logEl.scrollHeight; });
+  }
+
+  function parseForProgress(line) {
+    if (!totalSec) {
+      const m = DUR_RE.exec(line);
+      if (m) totalSec = (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
+    }
+    const t = TIME_RE.exec(line);
+    if (!t || !totalSec) return;
+    const cur = (+t[1]) * 3600 + (+t[2]) * 60 + parseFloat(t[3]);
+    setProgress(cur / totalSec);
+  }
+
+  function setProgress(ratio) {
+    if (!progressFill || !progressText) return;
+    const pct = Math.max(0, Math.min(100, ratio * 100));
+    progressFill.style.width = pct.toFixed(1) + "%";
+    progressText.textContent = pct.toFixed(1) + "%";
+  }
+
+  function showProgress(show) {
+    if (!progressWrap) return;
+    progressWrap.classList.toggle("hidden", !show);
   }
 
   function setRunning(running) {
@@ -347,10 +521,42 @@ function createJobPanel({
     finishRevealBtn.classList.add("hidden");
   }
 
-  async function start({ url, body, outputPath }) {
+  async function start({ url, body, outputPath, totalDurationSec }) {
     logEl.innerHTML = "";
     hideFinish();
     lastOutputPath = outputPath || null;
+    // Reset progress for the new job. If the caller passes the program
+    // duration explicitly we use it (editor knows its program time
+    // exactly); otherwise we fall back to parsing "Duration:" out of
+    // ffmpeg's startup log.
+    totalSec = totalDurationSec && totalDurationSec > 0 ? totalDurationSec : 0;
+    setProgress(0);
+
+    // Preflight: ask the server to build the command without starting
+    // ffmpeg, then show it in the confirm-command dialog. This lets the
+    // user see exactly what would run before committing — and gives an
+    // easy way to copy the command for offline use. The dry-run path
+    // skips overwrite checks (those run on the real-run POST below).
+    let previewCmd;
+    try {
+      const previewRes = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, dryRun: true }),
+      });
+      const previewData = await previewRes.json().catch(() => ({}));
+      if (!previewRes.ok) throw new Error(previewData.error || `HTTP ${previewRes.status}`);
+      previewCmd = previewData.command || "";
+    } catch (e) {
+      showFinish("error", "✗ 启动失败: " + e.message, null);
+      return;
+    }
+    if (!await Confirm.command(previewCmd)) {
+      // User cancelled at the preview dialog — nothing started, no
+      // progress bar to show.
+      return;
+    }
+    showProgress(true);
 
     const doStart = async (b) => {
       const res = await fetch(url, {
@@ -360,7 +566,10 @@ function createJobPanel({
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409 && data.existing) {
-        if (!confirm(`目标文件已存在，是否覆盖？\n\n${data.path}`)) return;
+        if (!await Confirm.overwrite(data.path)) {
+          showProgress(false);
+          return;
+        }
         return doStart({ ...b, overwrite: true });
       }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -370,7 +579,10 @@ function createJobPanel({
     };
 
     try { await doStart(body); }
-    catch (e) { showFinish("error", "✗ 启动失败: " + e.message, null); }
+    catch (e) {
+      showProgress(false);
+      showFinish("error", "✗ 启动失败: " + e.message, null);
+    }
   }
 
   JobBus.subscribe((ev) => {
@@ -385,16 +597,22 @@ function createJobPanel({
       case "done":
         owning = false;
         setRunning(false);
+        setProgress(1);
+        // Leave the bar at 100% briefly, then hide. Avoids the bar
+        // visibly jumping back to 0 when the next job starts.
+        setTimeout(() => showProgress(false), 600);
         showFinish("success", doneLabel, lastOutputPath);
         break;
       case "error":
         owning = false;
         setRunning(false);
+        showProgress(false);
         showFinish("error", `${errorLabel}: ${ev.message || ""}`, null);
         break;
       case "cancelled":
         owning = false;
         setRunning(false);
+        showProgress(false);
         showFinish("cancelled", cancelledLabel, null);
         break;
     }
@@ -477,6 +695,9 @@ const ConvertTab = (() => {
       finishBar: $("finishBar"),
       finishText: $("finishText"),
       finishRevealBtn: $("finishRevealBtn"),
+      progressWrap: $("progressWrap"),
+      progressFill: $("progressFill"),
+      progressText: $("progressText"),
       cancelUrl: "/api/convert/cancel",
       runningLabel: "转码中...",
       doneLabel: "✓ 转码完成",
@@ -1149,6 +1370,9 @@ const AudioTab = (() => {
       finishBar: $("audioFinishBar"),
       finishText: $("audioFinishText"),
       finishRevealBtn: $("audioFinishRevealBtn"),
+      progressWrap: $("audioProgressWrap"),
+      progressFill: $("audioProgressFill"),
+      progressText: $("audioProgressText"),
       cancelUrl: "/api/audio/cancel",
       runningLabel: "处理中...",
       doneLabel: "✓ 处理完成",
@@ -1330,5 +1554,6 @@ const Prepare = (() => {
   if (typeof EditorTab !== "undefined") EditorTab.init();
   Tabs.init();
   Quit.init();
+  Confirm.init();
   JobBus.connect();
 })();

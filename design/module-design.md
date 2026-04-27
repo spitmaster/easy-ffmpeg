@@ -55,19 +55,26 @@ HTTP handler 拆分到多个文件，职责如下：
 | `POST /api/fs/reveal` | `handleFsReveal` | 通用：打开任意路径（文件则打开其父目录） |
 | `GET /api/config/dirs` | `handleConfigDirs` | 返回保存的 inputDir/outputDir |
 | `POST /api/config/dirs` | `handleConfigDirs` | 写入 inputDir/outputDir |
-| `POST /api/convert/start` | `handleConvertStart` | 校验 → `buildFFmpegArgs` → `jobs.Start` |
+| `POST /api/convert/start` | `handleConvertStart` | 校验 → `buildFFmpegArgs` → `jobs.Start`；接受 `dryRun` / `overwrite` |
 | `POST /api/convert/cancel` | `handleConvertCancel` | `jobs.Cancel()` |
 | `GET /api/convert/stream` | `handleConvertStream` | SSE；订阅 `jobs.Subscribe` → 写 `data: <json>\n\n` + Flush（**所有 Tab 共享**） |
 | `POST /api/audio/probe` | `handleAudioProbe` | `service.ProbeAudio` → JSON |
-| `POST /api/audio/start` | `handleAudioStart` | `BuildAudioArgs`（convert / extract / merge；merge 的 `auto` 策略在此通过 `resolveMergeStrategy` 用 ffprobe 解析）|
+| `POST /api/audio/start` | `handleAudioStart` | `BuildAudioArgs`（convert / extract / merge；merge 的 `auto` 策略在此通过 `resolveMergeStrategy` 用 ffprobe 解析）；接受 `dryRun` / `overwrite` |
 | `POST /api/audio/cancel` | `handleAudioCancel` | `jobs.Cancel()` |
 | `GET/POST /api/editor/projects` | editor 模块 | 列出 / 新建工程 |
 | `GET/PUT/DELETE /api/editor/projects/:id` | editor 模块 | 读 / 保存 / 删除单个工程 |
 | `POST /api/editor/probe` | editor 模块 | 复用 `service.ProbeVideo` |
-| `POST /api/editor/export` | editor 模块 | `domain.BuildExportArgs` → `jobs.Start` |
+| `POST /api/editor/export` | editor 模块 | `domain.BuildExportArgs` → `jobs.Start`；接受 `dryRun` / `overwrite` |
 | `POST /api/editor/export/cancel` | editor 模块 | `jobs.Cancel()` |
 | `GET /api/editor/source?id=<id>` | editor 模块 | 以工程 id 为准把 source 文件通过 `http.ServeContent`（支持 Range）喂给 `<video>` |
 | `POST /api/quit` | `handleQuit` | 返回 200 后 `RequestShutdown()` |
+
+#### 三 Tab 共用的导出请求扩展字段
+
+| 字段 | 类型 | 行为 |
+|------|------|------|
+| `overwrite` | bool | 默认 false。文件已存在 + 该字段为 false → handler 返回 `409 + {existing:true, path}`，前端自绘覆盖确认弹窗。同意后带 `overwrite:true` 重发 |
+| `dryRun` | bool | 默认 false。true 时 handler 走完参数构建（含 audio merge 策略解析），返回 `{ok, dryRun, command}` 但**不** mkdir、**不**查 overwrite、**不** `jobs.Start`；merge 的临时 list 文件在该路径上立即 `Cleanup()` 释放。前端用它在真正执行前显示精确命令
 
 关键辅助（handlers.go 内）：
 - `buildFFmpegArgs(req convertRequest) []string`：convert Tab 的命令参数数组
@@ -106,16 +113,16 @@ HTTP handler 拆分到多个文件，职责如下：
 
 ## 3. `editor/`
 
-**职责**：视频剪辑器模块，自成一体。详细架构见 [editor-module-design.md](editor-module-design.md)。
+**职责**：单视频剪辑器模块，自成一体。详细架构见 [editor-module-design.md](editor-module-design.md)。
 
 分层（严格单向依赖）：
 
 | 子包 | 职责 | 依赖 |
 |------|------|------|
-| `editor/domain/` | 业务类型 + 纯函数：`Project`、`Clip`、`Source`、`ExportSettings`、`ProgramDuration`、`Validate`、`Split/Delete/Reorder/TrimLeft/TrimRight`、`BuildExportArgs` | 仅 stdlib |
+| `editor/domain/` | 业务类型 + 纯函数：`Project`（含 `AudioVolume` 线性增益、SchemaVersion=3）、`Clip`（含 `ProgramStart` 支持任意位置 + 空隙）、`Source`、`ExportSettings`、`ProgramDuration`、`Validate`、`Split/Delete/Reorder/TrimLeft/TrimRight`、`BuildExportArgs`（自动以 `programDur` 为基准 pad 短轨） | 仅 stdlib |
 | `editor/ports/` | DIP 接口：`ProjectRepository`、`VideoProber`、`JobRunner`、`PathResolver`、`Clock` + `ProjectSummary`、`VideoInfo` | `domain` |
 | `editor/storage/` | `JSONRepo` 实现 `ProjectRepository`；索引双写 + 原子写 + 损坏自愈 | `domain` + `ports` |
-| `editor/api/` | HTTP handler（projects / probe / export / source）+ DTO + `Router.Register(mux, prefix)` | `domain` + `ports`（不依赖具体存储/探测/任务实现） |
+| `editor/api/` | HTTP handler（projects / probe / export / source）+ DTO（含 `dryRun` / `overwrite`）+ `Router.Register(mux, prefix)` | `domain` + `ports`（不依赖具体存储/探测/任务实现） |
 | `editor/module.go` | 对外唯一入口：`Deps` / `NewModule(d)` / `Module.Register(mux, prefix)` | 组合 `api` + `storage` |
 | `editor/web/` | 规划位置：剪辑器独立 exe 模式下服务 `editor.html`（MVP 场景前端资源放在 `server/web/editor/` 里） | — |
 
@@ -125,9 +132,9 @@ HTTP handler 拆分到多个文件，职责如下：
 
 | 文件 | 覆盖 |
 |------|------|
-| `editor/domain/project_test.go` | `NewProject`、`ProgramDuration`、`Validate` 各类不变量违反 |
+| `editor/domain/project_test.go` | `NewProject`、`ProgramDuration`、`Validate` 各类不变量违反、`Migrate` 各 schema 版本升级 |
 | `editor/domain/timeline_test.go` | `Split` / `DeleteClip` / `Reorder` / `TrimLeft` / `TrimRight` 正反路径、不改原 slice |
-| `editor/domain/export_test.go` | 多 clip / 无音轨 / 各种缺参的 `BuildExportArgs` |
+| `editor/domain/export_test.go` | 多 clip / 无音轨 / 各种缺参的 `BuildExportArgs`；中间 / 尾部空隙；视频开头不允许 leading-gap，音频开头允许；`AudioVolume` unity / 非 unity / 0 默认；短轨自动 pad black/silence 到 `programDur` |
 | `editor/storage/jsonrepo_test.go` | roundtrip、删除后再 Get、按更新时间排序、索引损坏后重建 |
 
 ## 4. `service/`
@@ -318,10 +325,9 @@ func Open(url string) error {
 
 | 文件 | 作用 |
 |------|------|
-| `build.bat` / `build.sh` | 一键编译四平台（Windows / macOS arm64 & amd64 / Linux），并为 macOS 二进制自动封 `.app` Bundle |
+| `build.bat` / `build.sh` | 一键编译四平台（Windows / macOS arm64 & amd64 / Linux）原生二进制 |
 | `go.mod` / `go.sum` | Go 依赖描述 |
 | `tools/build_icon.go` | 开发期：把 PNG 图标烧成 Windows 资源文件（生成 `cmd/rsrc_windows.syso`） |
-| `tools/build_macapp.go` | 把 macOS 纯二进制包成 `.app` Bundle（含 Info.plist + icon.icns），供 `build.{bat,sh}` 的最后一步调用 |
 | `tools/download_windows.go` | 历史：从 gyan.dev 下载 Windows FFmpeg；当前已被 7z 嵌入方案取代，保留为参考 |
 | `assets/icon.svg` / `icon.icns` | 品牌图标源文件 |
 

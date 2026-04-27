@@ -22,6 +22,10 @@ type AudioRequest struct {
 	SampleRate int    `json:"sampleRate,omitempty"` // 0 = keep original
 	Channels   int    `json:"channels,omitempty"`   // 0 = keep original
 	Overwrite  bool   `json:"overwrite,omitempty"`
+	// DryRun: build the command and return it without starting ffmpeg
+	// or touching the filesystem. Used for the pre-execution preview
+	// dialog on the front-end.
+	DryRun bool `json:"dryRun,omitempty"`
 
 	// extract-only (slice 4)
 	AudioStreamIndex int    `json:"audioStreamIndex,omitempty"`

@@ -5,7 +5,7 @@
 | Tab | 状态 | 说明 |
 |-----|------|------|
 | 视频转换 | ✅ 已实现 | 核心功能，格式 / 编解码转换 |
-| 视频剪辑 | ✅ 已实现 (MVP) | 时间轴式单视频剪辑器，替代旧裁剪功能（详见 [editor-feature-design.md](editor-feature-design.md) + [editor-module-design.md](editor-module-design.md)） |
+| 单视频剪辑 | ✅ 已实现 (MVP) | 时间轴式单视频剪辑器，替代旧裁剪功能（详见 [editor-feature-design.md](editor-feature-design.md) + [editor-module-design.md](editor-module-design.md)） |
 | 音频处理 | ✅ 已实现 | 三模式：格式转换 / 从视频提取 / 合并（详见 [audio-feature-design.md](audio-feature-design.md)） |
 | 媒体信息 | 🚧 占位 | 同上；已经嵌入 ffprobe 为未来做准备 |
 | 设置 | 🚧 占位 | 同上 |
@@ -226,12 +226,78 @@ ffmpeg version 8.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFm
 
 最终 chip 显示：`FFmpeg 8.1 · 嵌入`，tooltip 保留完整版本串。
 
-## 8. 约束与规则
+## 8. 跨 Tab 共用的导出体验
+
+视频转换 / 音频处理 / 单视频剪辑三个 Tab 都通过 `createJobPanel`（[ui-design.md §7.3](ui-design.md)）触发任务，共享同一套交互流：
+
+```
+点击"开始"按钮
+    │
+    ▼
+① 后端 dryRun POST     {…params, dryRun: true}
+   后端：构建参数 + 构造命令字符串，但不 mkdir、不查 overwrite、不启 ffmpeg
+   返回 200 + {command: "ffmpeg -y -i ... <out>"}
+    │
+    ▼
+② 自绘"命令预览"dialog（replaces window.confirm）
+   ┌─ 即将执行 ──────────────────────────────────┐
+   │ 下列 ffmpeg 命令将被执行，确认后开始：       │
+   │ ┌──────────────────────────────────────┐  │
+   │ │ ffmpeg -y -i "..." -filter_complex   │  │ ← click-to-copy 整块
+   │ │   "..." -map [v] -map [a] ...        │  │
+   │ └──────────────────────────────────────┘  │
+   │ 点击命令框可复制                            │
+   │ ─────────────────────────────────────────  │
+   │ [📋 复制]                  [取消] [开始执行] │
+   └────────────────────────────────────────────┘
+   关闭路径：取消 / × / Esc / 点 [开始执行]
+    │
+    ▼ 用户确认
+③ 后端真实 POST       {…params}
+    │
+    ├─ 409 + {existing:true, path}
+    │     ▼
+    │   自绘"覆盖确认"dialog → 同意带 overwrite:true 重发；拒绝中止
+    │
+    └─ 200 → SSE 开始推日志 + 解析 `time=` 算进度条百分比
+        │
+        ▼
+       ④ 终态：done / error / cancelled → 完成条 + 进度条短暂停 100% 再隐藏
+```
+
+### 8.1 进度条
+
+- **位置**：动作行下方一条独立的轨 + 百分比标签（`.progress-wrap`），三 Tab 各一份，由 `createJobPanel` 公共逻辑驱动
+- **数据源**：解析 ffmpeg stderr 里的 `time=HH:MM:SS.ms`（当前进度）和首次出现的 `Duration: HH:MM:SS.ms`（总时长）。编辑器导出时 `panel.start({ totalDurationSec })` 显式传节目时间总长，比 `Duration:`（源文件长度）更准
+- **生命周期**：启动 → 0% → 跟随 `time=` 实时增长 → `done` 停 100% 600ms 后隐藏 → `error/cancelled/409 取消` 立即隐藏
+
+### 8.2 命令预览 dialog（dryRun 协议）
+
+- 协议：所有三个 endpoint 都接受 `dryRun: true`，返回 `{ok, dryRun, command}` 不动文件不启进程；merge mode 的临时 list 文件在 dryRun 路径上立即 cleanup
+- UI：720px 宽 `.modal-command`，`<pre class="confirm-command">` 用等宽字体最高 280px 高滚动；click-to-copy 用 `navigator.clipboard.writeText`,失败回退到隐藏 `<textarea> + execCommand("copy")`
+- 接管 Enter / Esc 全局键
+
+### 8.3 覆盖确认 dialog
+
+- 协议：未带 `overwrite:true` 时,`os.Stat(outPath)` 命中则返回 `409 + {existing:true, path}`
+- UI：460px 宽 `.modal-confirm`,等宽字体显示路径(`break-all`),Enter=覆盖 / Esc=取消
+- 三 endpoint 协议统一,`createJobPanel.start` 一份代码处理所有 Tab
+
+### 8.4 模态弹窗的统一约定
+
+所有自绘 dialog（覆盖确认 / 命令预览 / 编辑器导出配置 / 剪辑记录列表 / 文件选择器）：
+
+- **不响应**点击背景空白区域 —— 太容易误触把正在配置的导出操作丢掉
+- **× 关闭按钮**位于右上角(`.modal-header` flex + `.spacer { flex: 1 }`),与"取消"按钮等价
+- **Esc** 键关闭(等价于"取消"),**Enter** 在确认型 dialog 上等价于"确认"
+- 焦点：打开时聚焦主按钮,关闭时还原到打开前的元素(`lastFocused`)
+
+## 9. 约束与规则
 
 - 所有功能都走 `service` 层调用 FFmpeg/FFprobe，HTTP handler 不直接 `os/exec`
 - 长耗时任务都遵循「goroutine + 非阻塞 broadcast + SSE 订阅 + `fetch` + DOM 异步更新」范式
-- 前端命令预览与实际执行用同一套构建逻辑（前端展示用、后端执行用各一份，两者对齐）
-- 纯函数命令构建器（`server/*_args.go`）必须保持无 I/O，便于表驱动测试
+- 命令预览 dialog 显示的命令是 server 真实将执行的命令(经过同样的构造函数,dryRun 仅跳过 mkdir / overwrite check / `Start` 调用),客户端不重复构造,避免显示与执行漂移
+- 纯函数命令构建器（`server/*_args.go` / `editor/domain/export.go`）必须保持无 I/O，便于表驱动测试
 - 新增 Tab 的入口：
   1. `web/index.html` 的 `<nav class="tabs">` 去掉对应 button 的 `disabled`
   2. `web/index.html` 的 main 区域加一个 `<section class="panel hidden" id="panel-xxx">`

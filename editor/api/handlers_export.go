@@ -57,7 +57,7 @@ func (h *ExportHandlers) start(w http.ResponseWriter, r *http.Request) {
 	if req.Export != nil {
 		p.Export = *req.Export
 	}
-	if p.Export.OutputDir != "" {
+	if p.Export.OutputDir != "" && !req.DryRun {
 		if err := os.MkdirAll(p.Export.OutputDir, 0o755); err != nil {
 			writeErr(w, http.StatusBadRequest, "cannot create output dir: "+err.Error())
 			return
@@ -68,16 +68,44 @@ func (h *ExportHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	command := "ffmpeg " + strings.Join(args, " ")
+	// DryRun: hand back the command without starting ffmpeg or checking
+	// for an existing output. Front-end uses this to show the user the
+	// exact command that would run before they commit. Overwrite is
+	// re-checked on the real-run POST.
+	if req.DryRun {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":         true,
+			"dryRun":     true,
+			"command":    command,
+			"outputPath": filepath.ToSlash(outPath),
+		})
+		return
+	}
+	// Overwrite guard: if the destination already exists and the client
+	// hasn't authorized overwrite, return 409 with `existing:true` so the
+	// frontend can surface a confirmation dialog. Same shape as
+	// /api/convert/start and /api/audio/start.
+	if !req.Overwrite {
+		if _, statErr := os.Stat(outPath); statErr == nil {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":    "file exists",
+				"existing": true,
+				"path":     filepath.ToSlash(outPath),
+			})
+			return
+		}
+	}
 	if err := h.runner.Start(h.paths.FFmpegPath(), args); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	h.mu.Lock()
-	h.lastCommand = "ffmpeg " + strings.Join(args, " ")
+	h.lastCommand = command
 	h.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":         true,
-		"command":    "ffmpeg " + strings.Join(args, " "),
+		"command":    command,
 		"outputPath": filepath.ToSlash(outPath),
 	})
 }
