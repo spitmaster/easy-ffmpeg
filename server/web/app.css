@@ -64,6 +64,14 @@ body {
 .status-chip.clickable         { cursor: pointer; transition: background 0.15s; }
 .status-chip.clickable:hover   { background: rgba(16, 185, 129, 0.12); }
 
+.version-chip {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  user-select: text;
+}
+.version-chip:empty { display: none; }
+
 /* ---------------- tabs ---------------- */
 .tabs {
   display: flex;

@@ -68,6 +68,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/audio/probe", s.handleAudioProbe)
 	mux.HandleFunc("/api/audio/start", s.handleAudioStart)
 	mux.HandleFunc("/api/audio/cancel", s.handleAudioCancel)
+	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/quit", s.handleQuit)
 
 	// Video editor module — registers /api/editor/* routes.

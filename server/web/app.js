@@ -82,6 +82,26 @@ const Dirs = (() => {
 })();
 
 // ============================================================
+//  AppVersion：顶栏右侧显示当前程序版本
+// ============================================================
+
+const AppVersion = (() => {
+  async function init() {
+    const el = $("appVersion");
+    if (!el) return;
+    try {
+      const r = await fetch("/api/version");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && j.version) el.textContent = "v" + j.version;
+    } catch {
+      // network failure → leave chip empty (CSS hides :empty)
+    }
+  }
+  return { init };
+})();
+
+// ============================================================
 //  FFmpegStatus：顶栏版本 chip
 // ============================================================
 
@@ -1549,6 +1569,7 @@ const Prepare = (() => {
 
 (async () => {
   await Prepare.wait();
+  AppVersion.init();
   FFmpegStatus.init();
   await Dirs.load();
   Picker.init();

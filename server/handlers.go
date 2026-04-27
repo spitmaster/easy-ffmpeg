@@ -4,6 +4,7 @@ import (
 	"easy-ffmpeg/config"
 	"easy-ffmpeg/internal/browser"
 	"easy-ffmpeg/internal/embedded"
+	"easy-ffmpeg/internal/version"
 	"easy-ffmpeg/service"
 	"encoding/json"
 	"fmt"
@@ -380,6 +381,12 @@ func (s *Server) handleConvertStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// ---------------- version ----------------
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": version.Version})
 }
 
 // ---------------- quit ----------------
