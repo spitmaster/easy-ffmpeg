@@ -1486,7 +1486,10 @@ const Tabs = (() => {
 const Quit = (() => {
   function init() {
     $("quitBtn").addEventListener("click", async () => {
-      if (!confirm("确定退出 Easy FFmpeg 吗？")) return;
+      // No native confirm() — Wails WebView2 silently suppresses browser
+      // dialogs in production, which would make this handler early-return
+      // and leave the desktop window stuck open. Clicking "退出" is
+      // already an explicit intent and no irreversible action follows.
       try { await fetch("/api/quit", { method: "POST" }); } catch {}
       document.body.innerHTML = `
         <div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#9ca3af;flex-direction:column;gap:12px">

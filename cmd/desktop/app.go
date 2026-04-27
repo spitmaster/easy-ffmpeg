@@ -41,6 +41,21 @@ func (a *App) startup(ctx context.Context) {
 			log.Printf("desktop: ffmpeg prepare failed: %v", err)
 		}
 	}()
+
+	// Bridge the Web /api/quit endpoint to the Wails window. The main
+	// goroutine is stuck inside wails.Run, so nobody observes the quit
+	// signal otherwise — the "退出" button would silently no-op.
+	//
+	// We listen on srv.Quit() (the raw signal channel) instead of
+	// srv.Wait(): Wait also runs httpSrv.Shutdown with a 3-second
+	// graceful timeout, which long-lived SSE streams force to time out
+	// in full and that delay was visible as a "stuck for ~3s" on click.
+	// The Go process exiting (after wails.Run returns) frees the
+	// listener regardless, so we skip the graceful step here.
+	go func() {
+		<-a.srv.Quit()
+		wruntime.Quit(ctx)
+	}()
 }
 
 // domReady fires after the shell page's DOM is parsed and its

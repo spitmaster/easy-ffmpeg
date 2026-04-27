@@ -109,3 +109,12 @@ func (s *Server) RequestShutdown() {
 		close(s.quit)
 	}
 }
+
+// Quit returns a channel that is closed once RequestShutdown has been
+// called. Lets callers observe the shutdown signal without going through
+// Wait's synchronous httpSrv.Shutdown — whose 3s graceful timeout
+// dominates the perceived close latency when long-lived SSE streams are
+// still open. The desktop entry uses this to close its window the
+// instant the user clicks "退出"; the Go process exiting takes care of
+// the HTTP listener regardless.
+func (s *Server) Quit() <-chan struct{} { return s.quit }
