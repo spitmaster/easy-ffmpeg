@@ -14,6 +14,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"path/filepath"
 )
 
 // All sizes we render (union of Windows ICO + macOS ICNS needs).
@@ -71,6 +72,25 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("wrote assets/icon.icns (%d sizes)\n", len(icnsChunks))
+
+	// Wails desktop icons. Same source as cmd/icon.ico — single source of
+	// truth across Web build (cmd/rsrc_windows.syso) and desktop build.
+	desktopIco := filepath.Join("cmd", "desktop", "build", "windows", "icon.ico")
+	if err := os.MkdirAll(filepath.Dir(desktopIco), 0755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(desktopIco, packICO(icoPngs, icoSizes), 0644); err != nil {
+		panic(err)
+	}
+	fmt.Printf("wrote %s\n", desktopIco)
+
+	// Wails appicon.png — used for taskbar/dock and macOS/Linux. 512 is
+	// the largest size we render; Wails will scale up if needed.
+	desktopAppicon := filepath.Join("cmd", "desktop", "build", "appicon.png")
+	if err := os.WriteFile(desktopAppicon, pngsBySize[512], 0644); err != nil {
+		panic(err)
+	}
+	fmt.Printf("wrote %s\n", desktopAppicon)
 }
 
 // Render the icon at the given size. 4× super-sampling + box filter downscale
