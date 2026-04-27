@@ -165,6 +165,79 @@ main.go 启动 HTTP server 于 127.0.0.1:随机端口
 | macOS 运行报"无法打开" | Gatekeeper 未签名警告 | 右键"打开"或 `xattr -d com.apple.quarantine <path>` |
 | macOS ARM64 运行失败 | 嵌入的是 amd64 ffmpeg | 确认 `darwin.7z` 里是 arm64 构建的 ffmpeg |
 
+## 8.5 桌面版构建（v0.4.0 起）
+
+> 本节描述与 Web 版**并列**的 Wails 桌面版构建流程。Web 版构建步骤(§1–§8)完全不变。详细架构见 [v0.4.0-architecture.md](v0.4.0-architecture.md)。
+
+### 工具链前置依赖
+
+桌面版强制 `CGO_ENABLED=1` 且**必须本机编译**(不能跨编)。每个目标平台需要:
+
+| 平台 | 必装组件 | 安装命令(参考) |
+|------|---------|----------------|
+| Windows | MinGW-w64(gcc) + WebView2 Runtime(Win10+ 通常预装) | MSYS2: `pacman -S mingw-w64-x86_64-gcc`;或装 [TDM-GCC](https://jmeubank.github.io/tdm-gcc/) |
+| macOS | Xcode Command Line Tools | `xcode-select --install` |
+| Linux | gcc + WebKit2GTK 开发包 | Ubuntu/Debian: `apt install build-essential libwebkit2gtk-4.0-dev`;Fedora: `dnf install gcc webkit2gtk4.1-devel` |
+
+所有平台都需要 Wails CLI:
+
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+wails doctor   # 自检环境是否齐全
+```
+
+### 首次拉取 Wails 依赖
+
+仓库根目录执行(只需一次):
+
+```bash
+go mod tidy
+```
+
+这会把 Wails 及其传递依赖写入 `go.mod` / `go.sum`。Web 版的 `build.bat` / `build.sh` **不依赖** Wails,但 `go mod tidy` 跨整个 module 扫描,因此一次 tidy 后两个产物的依赖图都齐全。
+
+### 构建命令
+
+`build.bat` / `build.sh` **自动**追加桌面版构建分支:
+
+- 检测到 `wails` 命令存在 → 在 Web 版 4 产物完成后追加桌面构建
+- 检测不到 → 静默跳过,只产出 4 个 Web 产物
+
+手动单独构建桌面版:
+
+```bash
+cd cmd/desktop
+wails build -clean -o ../../dist/easy-ffmpeg-desktop.exe         # Windows 本机
+wails build -clean -platform darwin/arm64 -o ../../dist/...      # macOS arm64 本机
+wails build -clean -o ../../dist/easy-ffmpeg-desktop-linux       # Linux 本机
+```
+
+### 完整产物矩阵(8 个)
+
+| 产物 | CGO | 编译方式 | 大小估计 |
+|------|-----|---------|----------|
+| `easy-ffmpeg.exe`(Web Win) | 0 | 跨编 | ~35 MB |
+| `easy-ffmpeg-macos-arm64`(Web) | 0 | 跨编 | ~27 MB |
+| `easy-ffmpeg-macos-amd64`(Web) | 0 | 跨编 | ~27 MB |
+| `easy-ffmpeg-linux`(Web) | 0 | 跨编 | ~29 MB |
+| `easy-ffmpeg-desktop.exe`(桌面 Win) | 1 | 仅 Windows 本机 | ~40–50 MB(Web + WebView2 胶水) |
+| `easy-ffmpeg-desktop-macos-arm64.app` | 1 | 仅 macOS 本机 | ~32 MB |
+| `easy-ffmpeg-desktop-macos-amd64.app` | 1 | 仅 macOS 本机 | ~32 MB |
+| `easy-ffmpeg-desktop-linux` | 1 | 仅 Linux 本机 | ~35 MB(动态链接 libwebkit2gtk) |
+
+桌面版 `.app` / `.exe` 内部仍嵌入相同的 `<os>.7z`,首次启动解压目录与 Web 版**共享**(`~/.easy-ffmpeg/bin-<hash>/`)——两个产物可在同一台机器共存,缓存复用。
+
+### 桌面版常见构建陷阱
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| `wails: command not found` | Wails CLI 没装或不在 PATH | `go install github.com/wailsapp/wails/v2/cmd/wails@latest`;确认 `$GOPATH/bin` 在 PATH |
+| `cgo: C compiler "gcc" not found` | 没装 C 工具链 | 见上表"必装组件" |
+| Windows 构建找不到 `windows.h` | MinGW 不完整或 PATH 顺序错 | 确认 MSYS2 mingw64 工具链在 PATH 前列 |
+| Linux `package webkit2gtk-4.0 was not found` | 开发包未装 | `apt install libwebkit2gtk-4.0-dev` 或 `4.1-dev`(Ubuntu 22.04+) |
+| 双击桌面版 `.exe` 闪退无窗口 | WebView2 Runtime 缺失(Win7/8/旧 Win10) | 引导用户装 [Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/);或回退用 Web 版 |
+| macOS 启动报"无法打开" | 未签名 / 未公证 | `xattr -d com.apple.quarantine easy-ffmpeg-desktop-macos-arm64.app`;v0.4.x 后续切片接入正式签名 |
+
 ## 9. 发布与分发（未实现）
 
 当前没有 CI/CD。未来可做：

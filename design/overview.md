@@ -53,4 +53,4 @@
 - 不做服务器端批处理队列，纯桌面单机工具
 - 不做云端同步、账号体系
 - 短期不追求覆盖 FFmpeg 全部参数，只暴露最常用选项
-- 不打包 webview（不走 Electron / Tauri / Wails 路线）
+- ~~不打包 webview（不走 Electron / Tauri / Wails 路线）~~ —— **v0.4.0 撤销**：Web 版仍是核心,桌面版以 Wails 外壳形式作为可选并列产物;两者共享同一份后端代码,Web 版不退场。详见 [v0.4.0.md](v0.4.0.md) 与 [v0.4.0-architecture.md](v0.4.0-architecture.md)。

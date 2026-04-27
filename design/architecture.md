@@ -47,6 +47,8 @@
 
 依赖方向严格自上而下：`cmd → server, service → embedded, job, browser, procutil, config`。`editor` 子包内部也严格单向：`api → ports ← storage → domain`。`server` 通过 `editor_wiring.go` 适配具体实现为 `editor/ports` 接口，`editor/` 对主程序其余部分完全无感。
 
+> **v0.4.0**：上图保留为唯一的"后端架构图"。新增的 `cmd/desktop/main.go` 是与 `cmd/main.go` **并列**的入口,内部仍是 `server.New() + Listen()`,只是把端口交给嵌入的 Wails WebView 而非系统浏览器。后端、`server/`、`editor/`、`internal/*` 在两个入口之间字节相同。详见 [v0.4.0-architecture.md](v0.4.0-architecture.md)。
+
 ## 2. 目录结构
 
 ```

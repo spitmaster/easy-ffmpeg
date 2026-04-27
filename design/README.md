@@ -14,8 +14,10 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 | [editor-feature-design.md](editor-feature-design.md) | 单视频剪辑器 PRD：单视频时间轴剪辑、工程持久化、导出规则 |
 | [editor-module-design.md](editor-module-design.md) | 单视频剪辑器模块架构：SOLID 分层、接口契约、独立编译路径 |
 | [ui-design.md](ui-design.md) | UI 设计：HTML/CSS/JS 结构、自定义样式、交互细节 |
-| [build-and-deploy.md](build-and-deploy.md) | 构建与部署：7z 嵌入机制、跨平台编译、首次启动解压 |
+| [build-and-deploy.md](build-and-deploy.md) | 构建与部署：7z 嵌入机制、跨平台编译、首次启动解压、桌面版构建(§8.5) |
 | [roadmap.md](roadmap.md) | 路线图：功能迭代计划与技术债务 |
+| [v0.4.0.md](v0.4.0.md) | v0.4.0 双产物可行性论证：方案对比、风险权衡、最终选定方案 A |
+| [v0.4.0-architecture.md](v0.4.0-architecture.md) | v0.4.0 落地蓝图：Wails 外壳代码组织、入口设计、共享层契约、cgo 隔离 |
 
 ## 快速定位
 
