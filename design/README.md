@@ -7,6 +7,7 @@ Easy FFmpeg 是一个跨平台的图形化 FFmpeg 工具。程序启动后自动
 ```text
 design/
 ├── README.md         本索引
+├── milestones.md     ★ 进行中迁移的进度日志(接手者必读)
 ├── core/             共享层(后端、前端、构建、桌面版、路线图)
 └── tabs/             已实现的 Tab,各自独立目录
     ├── convert/      视频转换
@@ -17,6 +18,12 @@ design/
 每个 Tab 目录下分两个文件:`product.md` 是产品设计(目标、交互、字段、规则),`program.md` 是程序设计(代码组织、命令构建、API、测试)。
 
 未实现的 Tab(媒体信息、设置)暂不建目录,见 [core/roadmap.md](core/roadmap.md)。
+
+## 全局文档
+
+| 文档 | 类型 | 说明 |
+|------|------|------|
+| [milestones.md](milestones.md) | 进度 | **持续工作的进度日志**:每个进行中的迁移项目当前到哪一步、下一步做什么。新 session 接手必读。 |
 
 ## 共享层(core/)
 
@@ -30,6 +37,7 @@ design/
 | [core/build.md](core/build.md) | 程序 | 构建脚本、跨平台编译、7z 嵌入、首次启动解压、桌面版构建 |
 | [core/desktop.md](core/desktop.md) | 程序 | v0.4.0 双产物拓扑:决策、Wails 外壳设计、共享层不变量、cgo 隔离 |
 | [core/roadmap.md](core/roadmap.md) | 综合 | 路线图、技术债、未实现 Tab、已完成里程碑 |
+| [core/frontend-vue-migration.md](core/frontend-vue-migration.md) | 程序 | 前端 Vue 化迁移方案(v0.5.x):整体规划、目录结构、构建脚本接线、四个里程碑的范围与验收 |
 
 ## Tab 详细设计(tabs/)
 
@@ -43,6 +51,7 @@ design/
 
 ## 快速定位
 
+- **接手进行中的开发** → [milestones.md](milestones.md) (看清当前进度 + 下一步)
 - 完全不了解项目 → [core/product.md](core/product.md) → [core/architecture.md](core/architecture.md)
 - 改某个 Tab → 对应 `tabs/<tab>/product.md` + `tabs/<tab>/program.md`
 - 改 UI / 加新控件 → [core/ui-system.md](core/ui-system.md) + [core/frontend.md](core/frontend.md)

@@ -363,7 +363,9 @@ web/dist/         # ★ 构建产物,不入 git
 - 确认 `server/web/` 已从仓库消失(M1 已执行 git rm,这里只是复核)
 - `.gitignore` 已包含 `web/dist/` 与 `web/node_modules/`
 - 设计文档同步:[design/core/architecture.md](architecture.md)、[CLAUDE.md](../../CLAUDE.md) 更新前端章节(指向 `web/`)
+- **重写或删除已过时的 [frontend.md](frontend.md) 与 [ui-system.md](ui-system.md)**(它们描述的是已被替换的零构建 IIFE 架构,M2 完成后内容大部分已失效)
 - [design/core/roadmap.md](roadmap.md) 增加 v0.5.x 行
+- [design/milestones.md](../milestones.md):把"前端 Vue 化迁移"整段移到底部"已归档"区
 
 **验收**
 

@@ -2,6 +2,10 @@
 
 > 给未来的 Claude:**先读 [design/](design/) 再动手**。本仓库的设计文档是真相源(canonical),代码注释和顶层 `README.md` 可能滞后。
 
+## 第零步:看当前进度
+
+如果上一个 session 在做某个跨多 commit 的迁移项目(例如前端 Vue 化),先读 [design/milestones.md](design/milestones.md) ——它记录了"现在到第几个里程碑、下一步要做什么"。**不读这个就接手,大概率会重复别人已经做完的工作或破坏已有约定。**
+
 ## 第一步:读设计文档
 
 入口:[design/README.md](design/README.md) — 文档索引。
