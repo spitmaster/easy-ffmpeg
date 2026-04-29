@@ -1,25 +1,44 @@
 # CLAUDE.md
 
-> 给未来的 Claude:**先读 [design/](design/) 再动手**。本仓库的设计文档是真相源(canonical),代码注释和顶层 `README.md` / `STRUCTURE.md` 可能滞后。
+> 给未来的 Claude:**先读 [design/](design/) 再动手**。本仓库的设计文档是真相源(canonical),代码注释和顶层 `README.md` 可能滞后。
 
 ## 第一步:读设计文档
 
 入口:[design/README.md](design/README.md) — 文档索引。
 
+文档按"共享层 + 每 Tab 一个目录"组织,每个目录里产品设计(`product.md`)和程序设计(`program.md`)分离:
+
+```text
+design/
+├── README.md
+├── core/                            共享层
+│   ├── product.md       (产品)项目定位、价值、非目标
+│   ├── ui-system.md     (产品)配色、控件、对话框、共享导出体验
+│   ├── architecture.md  (程序)后端分层、数据流、启动时序
+│   ├── modules.md       (程序)server / service / internal / config 模块清单
+│   ├── frontend.md      (程序)前端 IIFE 模块、SSE、createJobPanel
+│   ├── build.md         (程序)构建脚本、7z 嵌入、桌面版构建
+│   ├── desktop.md       (程序)v0.4.0 双产物拓扑、Wails 外壳、cgo 隔离
+│   └── roadmap.md       路线图、技术债、里程碑
+└── tabs/
+    ├── convert/{product,program}.md  视频转换
+    ├── audio/{product,program}.md    音频处理(三模式)
+    └── editor/{product,program}.md   单视频剪辑器
+```
+
+未实现的 Tab(媒体信息、设置)暂未建目录。
+
 按场景挑读:
 
 | 场景 | 必读 |
 |------|------|
-| 完全不了解项目 | [design/overview.md](design/overview.md) → [design/architecture.md](design/architecture.md) |
-| 改/加功能 | [design/feature-design.md](design/feature-design.md) + [design/module-design.md](design/module-design.md) |
-| 改音频相关 | [design/audio-feature-design.md](design/audio-feature-design.md) |
-| 改剪辑器 | [design/editor-feature-design.md](design/editor-feature-design.md) + [design/editor-module-design.md](design/editor-module-design.md) |
-| 改 UI / 前端 | [design/ui-design.md](design/ui-design.md) |
-| 改构建/打包 | [design/build-and-deploy.md](design/build-and-deploy.md) |
-| 桌面版(Wails)相关 | [design/v0.4.0.md](design/v0.4.0.md) + [design/v0.4.0-architecture.md](design/v0.4.0-architecture.md) |
-| 路线图/技术债 | [design/roadmap.md](design/roadmap.md) |
-
-> 顶层的 [STRUCTURE.md](STRUCTURE.md) 已过时(还在描述早期 `ui/` 包),**别用它指导工作**,以 `design/` 为准。
+| 完全不了解项目 | [design/core/product.md](design/core/product.md) → [design/core/architecture.md](design/core/architecture.md) |
+| 改某个 Tab | 对应 `design/tabs/<tab>/product.md` + `design/tabs/<tab>/program.md` |
+| 改 UI / 加新控件 | [design/core/ui-system.md](design/core/ui-system.md) + [design/core/frontend.md](design/core/frontend.md) |
+| 改后端共享模块 | [design/core/modules.md](design/core/modules.md) |
+| 改构建/打包 | [design/core/build.md](design/core/build.md) |
+| 桌面版(Wails)相关 | [design/core/desktop.md](design/core/desktop.md) |
+| 路线图/技术债 | [design/core/roadmap.md](design/core/roadmap.md) |
 
 ## 项目一句话定位
 
@@ -27,18 +46,18 @@
 
 ## 双入口拓扑(v0.4.0+)
 
-```
+```text
 共享层(server/ service/ editor/ internal/ config/)── 字节相同
     │
     ├── cmd/main.go         → Web 版,浏览器打开 localhost
     └── cmd/desktop/main.go → 桌面版,Wails WebView 指向同一个 localhost
 ```
 
-详见 [design/v0.4.0-architecture.md](design/v0.4.0-architecture.md)。
+详见 [design/core/desktop.md](design/core/desktop.md)。
 
 ## 不可违反的架构不变量
 
-改动前必须确认不会破坏这些(完整列表见 [design/v0.4.0-architecture.md](design/v0.4.0-architecture.md) §1):
+改动前必须确认不会破坏这些(完整列表见 [design/core/desktop.md §4](design/core/desktop.md)):
 
 1. **后端零分支**:`server/` 及下游不得出现宿主感知代码(`if wails {}` / build tag)。Web 版与桌面版跑完全相同的字节。
 2. **前端零改动**:`server/web/` 只用 `fetch` + `EventSource` 与 `127.0.0.1:<port>/api/*` 对话,不引入 Wails 原生 binding。
