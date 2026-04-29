@@ -19,6 +19,21 @@ REM Run button or piped to a file, the codes show up as literal "[1;33m"
 REM garbage. NO_COLOR is the cross-tool standard (https://no-color.org/).
 set NO_COLOR=1
 
+REM ---- Frontend: build Vue UI into web\dist\ before Go embeds it ------
+REM Must run before any go build, since web\embed.go does //go:embed all:dist.
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: npm not found. Install Node.js ^>= 20 to build the frontend.
+    goto :fail
+)
+echo ==^> Building frontend (web\) -^> web\dist\
+pushd web
+call npm install --no-audit --no-fund
+if errorlevel 1 (popd ^& goto :fail)
+call npm run build
+if errorlevel 1 (popd ^& goto :fail)
+popd
+
 REM ---- Web edition: 4 cross-compiled artifacts (CGO=0) -----------------
 call :build windows amd64 easy-ffmpeg.exe            || goto :fail
 call :build darwin  arm64 easy-ffmpeg-macos-arm64    || goto :fail

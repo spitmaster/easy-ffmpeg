@@ -11,6 +11,19 @@ LDFLAGS="-s -w"
 # don't render VT codes.
 export NO_COLOR=1
 
+# ---- Frontend: build Vue UI into web/dist/ before Go embeds it ----------
+# Must run before any go build, since web/embed.go does //go:embed all:dist.
+build_frontend() {
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: npm not found. Install Node.js >= 20 to build the frontend." >&2
+        return 1
+    fi
+    echo "==> Building frontend (web/) -> web/dist/"
+    (cd web && npm install --no-audit --no-fund && npm run build)
+}
+
+build_frontend
+
 # ---- Web edition: 4 cross-compiled artifacts (CGO=0) ----------------------
 build() {
     local os="$1" arch="$2" out="$3"
