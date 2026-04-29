@@ -26,6 +26,22 @@ async function onQuit() {
   // No native confirm() — Wails WebView2 silently suppresses browser
   // dialogs in production. Clicking 退出 is already explicit intent.
   await quitApi.quit()
+  // The goodbye overlay visually covers everything via Teleport, but the
+  // <audio>/<video> elements under it (e.g. the editor preview) stay
+  // mounted and keep playing — so the user hears phantom audio after
+  // "exit". Detach every media element on the page before showing it.
+  // pause() alone isn't enough; we also clear src + call load() to
+  // release the underlying decoder.
+  document.querySelectorAll('audio, video').forEach((el) => {
+    const m = el as HTMLMediaElement
+    try {
+      m.pause()
+      m.removeAttribute('src')
+      m.load()
+    } catch {
+      /* ignore — element may already be detached */
+    }
+  })
   exited.value = true
 }
 </script>

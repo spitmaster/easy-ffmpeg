@@ -1,0 +1,91 @@
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { editorApi, type Project } from '@/api/editor'
+
+const props = defineProps<{ open: boolean }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'load', id: string): void
+}>()
+
+const items = ref<Project[]>([])
+const loading = ref(false)
+const error = ref('')
+
+watch(
+  () => props.open,
+  async (v) => {
+    if (!v) return
+    loading.value = true
+    error.value = ''
+    try {
+      items.value = (await editorApi.listProjects()) || []
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+    } finally {
+      loading.value = false
+    }
+  },
+)
+
+function fmtDate(s: string): string {
+  if (!s) return ''
+  return s.replace('T', ' ').slice(0, 16)
+}
+
+async function onDelete(p: Project) {
+  if (!confirm(`删除工程 "${p.name}"？`)) return
+  try {
+    await editorApi.deleteProject(p.id)
+    items.value = items.value.filter((x) => x.id !== p.id)
+  } catch (e) {
+    alert('删除失败: ' + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+function onLoad(p: Project) {
+  emit('load', p.id)
+  emit('close')
+}
+</script>
+
+<template>
+  <div
+    v-if="open"
+    class="fixed inset-0 z-40 flex items-center justify-center bg-black/60"
+  >
+    <div class="flex max-h-[80vh] w-[640px] flex-col rounded border border-border-strong bg-bg-panel">
+      <div class="flex items-center justify-between border-b border-border-base px-4 py-2">
+        <h3 class="text-sm font-medium">剪辑记录</h3>
+        <button class="text-fg-muted hover:text-fg-base" @click="emit('close')">×</button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-3">
+        <div v-if="loading" class="text-center text-xs text-fg-muted">加载中...</div>
+        <div v-else-if="error" class="text-xs text-danger">{{ error }}</div>
+        <div v-else-if="!items.length" class="text-center text-xs text-fg-muted">暂无剪辑工程</div>
+        <ul v-else class="flex flex-col gap-1 text-xs">
+          <li
+            v-for="p in items"
+            :key="p.id"
+            class="flex items-center gap-2 rounded border border-border-base bg-bg-base px-3 py-2 hover:bg-bg-elevated"
+          >
+            <div class="flex-1 overflow-hidden">
+              <div class="truncate text-fg-base">{{ p.name || '(未命名)' }}</div>
+              <div class="truncate text-[10px] text-fg-muted">
+                {{ p.source?.path }} · 更新于 {{ fmtDate(p.updatedAt) }}
+              </div>
+            </div>
+            <button
+              class="rounded border border-border-strong px-2 py-1 hover:bg-bg-elevated"
+              @click="onLoad(p)"
+            >打开</button>
+            <button
+              class="rounded border border-danger px-2 py-1 text-danger hover:bg-danger/10"
+              @click="onDelete(p)"
+            >🗑</button>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</template>
