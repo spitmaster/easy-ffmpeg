@@ -1,7 +1,25 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import TopBar from './components/layout/TopBar.vue'
 import TabNav from './components/layout/TabNav.vue'
+import ConfirmOverwriteModal from './components/modals/ConfirmOverwriteModal.vue'
+import ConfirmCommandModal from './components/modals/ConfirmCommandModal.vue'
+import PickerModal from './components/modals/PickerModal.vue'
+import PrepareOverlay from './components/modals/PrepareOverlay.vue'
+import { jobBus } from './api/jobs'
+import { useDirsStore } from './stores/dirs'
+
+const dirs = useDirsStore()
+
+onMounted(async () => {
+  // Single SSE channel for the whole app — connect once at boot, the bus
+  // fans events out to whichever tab is currently running a job.
+  jobBus.connect()
+  // Best-effort load of last-used input/output dirs so picker start-paths
+  // are pre-populated. Non-blocking: failure leaves them empty.
+  await dirs.load()
+})
 </script>
 
 <template>
@@ -12,4 +30,12 @@ import TabNav from './components/layout/TabNav.vue'
       <RouterView />
     </main>
   </div>
+
+  <!-- Globally-shared dialogs. They mount once here and listen on the
+       modals store, so any view can trigger them imperatively via
+       useModalsStore().showCommand / showOverwrite / showPicker. -->
+  <PrepareOverlay />
+  <PickerModal />
+  <ConfirmCommandModal />
+  <ConfirmOverwriteModal />
 </template>

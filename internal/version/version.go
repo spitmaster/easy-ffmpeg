@@ -5,10 +5,10 @@
 // reflects the current build.
 //
 // The default below is the marketing version of the current release.
-// Build pipelines that want a richer string (e.g. "0.5.1+abcdef")
+// Build pipelines that want a richer string (e.g. "0.5.0+abcdef")
 // override it via -ldflags '-X "easy-ffmpeg/internal/version.Version=..."'.
 package version
 
 // Version is the application's user-facing version string. Treated as a
 // var (not const) so release builds can override it via -ldflags -X.
-var Version = "0.5.1"
+var Version = "0.5.0"
