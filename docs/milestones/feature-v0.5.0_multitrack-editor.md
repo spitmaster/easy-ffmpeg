@@ -4,7 +4,7 @@
 > **目标**:在新 Tab 下提供类 Premiere Pro 的多轨剪辑器(自建工程 + 素材库 + 多视频/音频轨 + 跨轨拖动 + overlay/amix 导出),与单视频剪辑 Tab **共存**,共享底层(后端 `editor/common/`,前端 `components/timeline-shared/` + `composables/timeline/`)。
 > **范围与设计**:[../tabs/multitrack/product.md](../tabs/multitrack/product.md)(PRD)+ [../tabs/multitrack/program.md](../tabs/multitrack/program.md)(技术设计)。
 >
-> **当前状态**:M1 ✅ + M2 ✅ 完成(2026-04-30);**进入 M3 后端共享层抽取**(`docs/todo/feature-v0.5.0_multitrack-editor.md`)。
+> **当前状态**:M1 ✅ + M2 ✅ 完成(2026-04-30);**M3 代码完成 🚧 待运行时验收**(`go test ./...` + `CGO_ENABLED=0 go test ./...` + `go build ./...` 三绿;剩 API 字节级 curl diff + 单视频零回归手测,详见 `docs/todo/feature-v0.5.0_multitrack-editor.md`)。
 
 ## 全局不变量(每个 M 落盘前必跑)
 
@@ -39,7 +39,7 @@
 
 | 里程碑 | 状态 | 完成日期 | Commit | 交付内容 |
 |--------|------|---------|--------|---------|
-| **M3** 后端共享层抽取 | ⏳ 待启动 | — | — | 把 `editor/domain/` 中通用部分(`Clip` 基础结构、`planSegments` + gap 填充、`buildVideoTrackFilter` / `buildAudioTrackFilter`、`Split / Delete / Reorder / TrimLeft / TrimRight / CarveRange`、codec 枚举验证、`Validate(clips)`)按 [program.md §2.1](../tabs/multitrack/program.md) 提到 `editor/common/domain/`;`editor/ports/{clock,runner,paths}.go` 提到 `editor/common/ports/`;单视频 `editor/` 改为引用共享层(type alias / re-export 保持 API 表面不变);`go test ./...` + `CGO_ENABLED=0 go test ./...` 双绿;`/api/editor/*` 响应字节级不变(diff 工具核对);abi 完成评审基线录屏 |
+| **M3** 后端共享层抽取 | 🚧 代码完成,待运行时验收 | — | — | 把 `editor/domain/` 中通用部分(`Clip` 基础结构、`PlanSegments` + gap 填充、`BuildVideoTrackFilter` / `BuildAudioTrackFilter`、`Split / Delete / Reorder / TrimLeft / TrimRight / SetProgramStart / ClipAtProgramTime`、codec normalize、`ValidateClips`)按 [program.md §2.1](../tabs/multitrack/program.md) 提到 `editor/common/domain/`;`editor/ports/{clock,runner,paths}.go` 提到 `editor/common/ports/`;单视频 `editor/` 改为引用共享层(type alias / 函数变量 re-export 保持 API 表面不变);`go test ./...` + `CGO_ENABLED=0 go test ./...` + `go build ./...` 三绿 ✅;待:`/api/editor/*` 响应字节级 curl diff + 单视频零回归手测 + commit |
 | **M4** 前端共享层抽取 | ⏳ 未开始 | — | — | 抽 `components/timeline-shared/`(TimelineRuler / TrackRow / Clip / Playhead / RangeSelection / PlayBar / ProjectsModal / ExportDialog / ExportSidebar / AudioVolumePopover)+ `composables/timeline/`(useTimelineZoom / Playback / RangeSelect / Drag / UndoStack / Autosave / GapClock / AudioGain);定义 `web/src/types/timeline.ts`;共享组件**不直接 import store**,全部 props/emit driven;`EditorView.vue` 重写为基于共享组件的薄壳;`npm run build` 通过;**单视频零回归手测清单**([program.md §2.2.4](../tabs/multitrack/program.md))全过 |
 | **M5** 多轨工程骨架 | ⏳ 未开始 | — | — | 后端:`multitrack/` 包按 SOLID 分层(domain/ports/storage/api/module),`POST /api/multitrack/projects` 创建空工程,JSON 落 `~/.easy-ffmpeg/multitrack/`,沿用 `multitrack/storage/jsonrepo` 自愈索引;前端:`MultitrackView.vue` 空壳(只 grid 布局占位)+ `stores/multitrack.ts` + `api/multitrack.ts` + `router` 加 `/multitrack` + `TabNav` 加项;新建空工程能落 disk + 列表能读出来 + 切换两个 Tab 不互相污染 store |
 | **M6** 多源导入 + 多轨渲染 | ⏳ 未开始 | — | — | 后端:`POST /api/multitrack/projects/:id/sources` 多文件 ffprobe 写入(`mediaProberAdapter` 支持纯音频);前端:`MultitrackLibrary.vue` + `MultitrackLibraryItem.vue`(导入 / 双击试听 / 拖出);**拖入时间轴空白处自动建轨**(视频→V+A,音频→A);N 条轨道 v-for 渲染 + 垂直滚动;source 色条;预览走 M2 选定方案(单 `<video>` 切源 + 每条音频轨独立 `<audio>` + WebAudio gain);**多视频轨叠加预览仅顶层** + UI 提示 |
