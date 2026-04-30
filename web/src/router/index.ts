@@ -7,6 +7,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/convert', name: 'convert', component: () => import('@/views/ConvertView.vue') },
   { path: '/audio', name: 'audio', component: () => import('@/views/AudioView.vue') },
   { path: '/editor', name: 'editor', component: () => import('@/views/EditorView.vue') },
+  { path: '/multitrack', name: 'multitrack', component: () => import('@/views/MultitrackView.vue') },
 ]
 
 export const router = createRouter({

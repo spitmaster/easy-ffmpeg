@@ -5,6 +5,7 @@ const tabs = [
   { to: '/convert', label: '视频转换' },
   { to: '/audio', label: '音频处理' },
   { to: '/editor', label: '单视频剪辑' },
+  { to: '/multitrack', label: '多轨剪辑' },
 ]
 </script>
 

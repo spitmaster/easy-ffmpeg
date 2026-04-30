@@ -76,6 +76,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 		mod.Register(mux, "/api/editor")
 		log.Printf("editor: mounted at /api/editor (data: %s)", dataDir)
 	}
+
+	// Multitrack editor module — registers /api/multitrack/* routes.
+	// Same non-fatal failure mode as the single-video editor.
+	if mod, dataDir, err := s.buildMultitrackModule(); err != nil {
+		log.Printf("multitrack: disabled (%v)", err)
+	} else {
+		mod.Register(mux, "/api/multitrack")
+		log.Printf("multitrack: mounted at /api/multitrack (data: %s)", dataDir)
+	}
 }
 
 // Listen binds to the given host:port and returns the actual address.
