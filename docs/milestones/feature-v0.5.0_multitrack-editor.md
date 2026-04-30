@@ -4,7 +4,7 @@
 > **目标**:在新 Tab 下提供类 Premiere Pro 的多轨剪辑器(自建工程 + 素材库 + 多视频/音频轨 + 跨轨拖动 + overlay/amix 导出),与单视频剪辑 Tab **共存**,共享底层(后端 `editor/common/`,前端 `components/timeline-shared/` + `composables/timeline/`)。
 > **范围与设计**:[../tabs/multitrack/product.md](../tabs/multitrack/product.md)(PRD)+ [../tabs/multitrack/program.md](../tabs/multitrack/program.md)(技术设计)。
 >
-> **当前状态**:M1 ✅ + M2 ✅ + M3 ✅ 完成(2026-04-30);**M4 前端共享层抽取**待启动(M4 启动时把 milestones M4 行的"交付内容"拆成可勾选清单填入 `docs/todo/feature-v0.5.0_multitrack-editor.md`)。
+> **当前状态**:M1 ✅ + M2 ✅ + M3 ✅ 完成(2026-04-30);**M4 代码完成 🚧 待运行时验收**(`npx vue-tsc --noEmit` + `npm run build` + `go test ./...` + `CGO_ENABLED=0 go test ./...` + `go build ./...` 全绿;代码 commit `202d2c1 v0.5.0-M4`;剩单视频零回归手测,详见 `docs/todo/feature-v0.5.0_multitrack-editor.md`)。
 
 ## 全局不变量(每个 M 落盘前必跑)
 
