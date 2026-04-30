@@ -31,11 +31,39 @@ export function useEditorPreview(
   // Track whether listeners have been attached so we can be re-init safe.
   const inGap = ref(false)
 
-  // ---- Shared primitives: gap clock + WebAudio gain ----
+  // ---- Shared primitives: gap clock + video clock + WebAudio gain ----
 
   const gapClock = useGapClock({
     shouldContinue: () => store.playing && !!store.project,
     onTick: gapTick,
+  })
+
+  // Video clock: rAF-driven smoother that runs while the <video> element is
+  // playing and pulls the program playhead forward by reading v.currentTime
+  // each frame. Without this, store.playhead is only advanced by the
+  // <video> 'timeupdate' event, which browsers throttle to ~4Hz — that
+  // makes both the timeline cursor and the PlayBar timecode look stuttery
+  // even though the video itself plays smoothly. The newPlayhead argument
+  // (anchor + elapsed) is ignored: v.currentTime is the authoritative
+  // clock during video playback. onVideoTimeUpdate still handles clip-end
+  // transitions; this clock only smooths the per-frame display.
+  const videoClock = useGapClock({
+    shouldContinue: () => {
+      const v = el(videoRef)
+      return store.playing && activeVideoIndex >= 0 && !!v && !v.paused
+    },
+    onTick: () => {
+      const v = el(videoRef)
+      if (!v || !store.project) return 'stop'
+      const clips = store.project.videoClips || []
+      const c = clips[activeVideoIndex]
+      if (!c) return 'stop'
+      const total = totalDuration(store.project)
+      const delta = v.currentTime - c.sourceStart
+      const ph = c.programStart + Math.max(0, delta)
+      store.playhead = Math.min(total, Math.max(0, ph))
+      return 'continue'
+    },
   })
 
   const audioGain = useAudioGain(audioRef, () => store.project?.audioVolume ?? 1)
@@ -70,6 +98,7 @@ export function useEditorPreview(
     activeVideoIndex = -1
     activeAudioIndex = -1
     gapClock.stop()
+    videoClock.stop()
     inGap.value = false
     applyAudioVolume()
     seek(0)
@@ -92,6 +121,7 @@ export function useEditorPreview(
     if (activeVideoIndex >= 0) {
       gapClock.stop()
       if (v.paused) v.play().catch(() => {})
+      videoClock.start(0)
     } else {
       gapClock.start(store.playhead)
     }
@@ -104,6 +134,7 @@ export function useEditorPreview(
     if (v) v.pause()
     if (a) a.pause()
     gapClock.stop()
+    videoClock.stop()
     store.playing = false
   }
 
@@ -124,7 +155,9 @@ export function useEditorPreview(
       if (activeVideoIndex >= 0 && v) {
         gapClock.stop()
         if (v.paused) v.play().catch(() => {})
+        videoClock.start(0)
       } else {
+        videoClock.stop()
         gapClock.stop()
         gapClock.start(store.playhead)
       }
@@ -177,6 +210,8 @@ export function useEditorPreview(
       if (v.readyState > 0) v.currentTime = pos.src
       if (v.paused) v.play().catch(() => {})
       keepAudioInSync(newPlayhead)
+      // Hand off to the video clock for smooth per-frame playhead updates.
+      videoClock.start(0)
       return 'stop'
     }
     keepAudioInSync(newPlayhead)
@@ -372,6 +407,7 @@ export function useEditorPreview(
   onUnmounted(() => {
     stopWatchAttach()
     gapClock.stop()
+    videoClock.stop()
     detachListeners()
   })
 

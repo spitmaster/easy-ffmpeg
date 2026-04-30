@@ -42,7 +42,9 @@ const ops = useEditorOps()
 const videoRef = ref<HTMLVideoElement | null>(null)
 const audioRef = ref<HTMLAudioElement | null>(null)
 const scrollEl = useTemplateRef<HTMLDivElement>('scrollEl')
-const rulerCmp = useTemplateRef<{ rootEl: { value: HTMLDivElement | null } }>('rulerCmp')
+// Vue's defineExpose auto-unwraps refs via proxyRefs, so rulerCmp.value.rootEl
+// is the DOM element itself (not a Ref) — typing/access must reflect that.
+const rulerCmp = useTemplateRef<{ rootEl: HTMLDivElement | null }>('rulerCmp')
 
 const preview = useEditorPreview(videoRef, audioRef)
 
@@ -117,9 +119,9 @@ const drag = useTimelineDrag({
   sourceMaxFor: () => store.project?.source?.duration ?? 0,
 })
 
-// rulerEl is a computed unwrap of the TimelineRuler component's exposed
-// rootEl ref, fed to useTimelineRangeSelect for client-x → seconds math.
-const rulerEl = computed(() => rulerCmp.value?.rootEl?.value ?? null)
+// rulerEl is the TimelineRuler component's exposed root <div>, fed to
+// useTimelineRangeSelect / clientXToTime for client-x → seconds math.
+const rulerEl = computed(() => rulerCmp.value?.rootEl ?? null)
 const rangeSelect = useTimelineRangeSelect({
   rulerEl,
   pxPerSecond: () => store.pxPerSecond,
