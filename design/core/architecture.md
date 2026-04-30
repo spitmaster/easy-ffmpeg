@@ -1,6 +1,6 @@
 # 后端架构(程序设计)
 
-> 本文档描述后端的分层架构、目录结构、数据流、启动时序、并发模型、错误处理。前端架构见 [frontend.md](frontend.md);桌面版双入口拓扑见 [desktop.md](desktop.md)。
+> 本文档描述后端的分层架构、目录结构、数据流、启动时序、并发模型、错误处理。前端架构(Vue 3 + Vite + Pinia,工程目录在仓库根 `web/`)见 [frontend.md](frontend.md);桌面版双入口拓扑见 [desktop.md](desktop.md)。
 
 ## 1. 分层架构
 
@@ -20,7 +20,7 @@
 │                      start/cancel│◀│   · Prepare               │
 │  - audio_args.go     命令构建纯函数│ │   · CheckFFmpeg           │
 │  - editor_wiring.go  适配器装配  │ │   · GetFFmpegDir          │
-│  - web/ + web/editor/ 静态资源    │ │  probe.go                │
+│       (前端资源由 web/ 包注入)    │ │  probe.go                │
 └──────────┬───────────────────────┘ │   · ProbeAudio / Video   │
            │                         └────────────┬─────────────┘
            ▼                                      │
@@ -49,7 +49,7 @@
 
 依赖方向严格自上而下:`cmd → server, service → embedded, job, browser, procutil, config`。`editor` 子包内部也严格单向:`api → ports ← storage → domain`。`server` 通过 `editor_wiring.go` 适配具体实现为 `editor/ports` 接口,`editor/` 对主程序其余部分完全无感。
 
-> **v0.4.0 双入口**:`cmd/desktop/main.go` 是与 `cmd/main.go` **并列**的入口,内部仍是 `server.New() + Listen()`,只是把端口交给嵌入的 Wails WebView 而非系统浏览器。后端、`server/`、`editor/`、`internal/*` 在两个入口之间字节相同。详见 [desktop.md](desktop.md)。
+> **v0.4.0 双入口**:`cmd/desktop/main.go` 是与 `cmd/main.go` **并列**的入口,内部仍是 `server.New() + Listen()`,只是把端口交给嵌入的 Wails WebView 而非系统浏览器。后端、`server/`、`editor/`、`internal/*`、以及 v0.5.x 起的 `web/` 前端 bundle,在两个入口之间字节相同。详见 [desktop.md](desktop.md)。
 
 ## 2. 目录结构
 
@@ -62,22 +62,24 @@ easy-ffmpeg/
 │   └── desktop/                      Wails 桌面版入口(v0.4.0+)
 │       ├── main.go                   wails.Run + 生命周期钩子
 │       ├── app.go                    App 结构体 + startup/shutdown
-│       ├── frontend/dist/index.html  极简 shell(JS 跳转到 localhost:port)
+│       ├── frontend/dist/index.html  极简 splash(JS 跳转到 localhost:port)
 │       └── wails.json
+├── web/                              ★ 前端工程(v0.5.x+,Vue 3 + Vite + TS + Pinia + Tailwind)
+│   ├── package.json / vite.config.ts / tsconfig.json
+│   ├── tailwind.config.js / postcss.config.js / index.html
+│   ├── embed.go                      `//go:embed all:dist` → easy-ffmpeg/web 包
+│   ├── dist/                         构建产物(gitignore;npm run build 写入)
+│   └── src/                          main.ts / App.vue / api/ stores/ composables/
+│                                     components/ views/ router/ utils/ styles/
+│                                     (详见 frontend.md §2)
 ├── server/
-│   ├── server.go                     路由、日志中间件、生命周期;装配 editor.Module
+│   ├── server.go                     路由、日志中间件、生命周期;装配 editor.Module;
+│   │                                 import easy-ffmpeg/web,fs.Sub(web.FS, "dist") 挂 /
 │   ├── handlers.go                   convert + 共享 fs/config/ffmpeg 接口
 │   ├── handlers_audio.go             audio probe / start / cancel
 │   ├── audio_args.go                 纯函数:AudioRequest → ffmpeg args
 │   ├── audio_args_test.go            表驱动测试
-│   ├── editor_wiring.go              把 service.* / job.Manager 适配成 editor/ports 接口
-│   └── web/                          go:embed 打包的静态前端
-│       ├── index.html
-│       ├── app.css
-│       ├── app.js                    模块化 IIFE(见 frontend.md)
-│       └── editor/                   剪辑器前端资源
-│           ├── editor.css
-│           └── editor.js             EditorApi / EditorStore / Preview / Timeline / ...
+│   └── editor_wiring.go              把 service.* / job.Manager 适配成 editor/ports 接口
 ├── editor/                           剪辑器模块(可单独提取为独立 exe)
 │   ├── module.go                     对外入口:Deps + NewModule + Module.Register
 │   ├── domain/                       纯业务层:Project / Clip / Timeline / Export
@@ -136,7 +138,7 @@ T=0.0s   go service.Prepare() 异步启动(不阻塞主流程)
              └─ progressWriter 在 io.Copy 里累计字节数
              └─ 每个字节写入都更新全局 progress 结构
 T=0.1s   browser.Open(url) 启动系统默认浏览器
-T=0.3s   浏览器加载页面 → app.js 调用 /api/prepare/status
+T=0.3s   浏览器加载页面 → PrepareOverlay.vue 轮询 /api/prepare/status
          └─ state = "extracting" → 显示遮罩 + 进度条
          └─ 300ms 轮询一次直到 "ready"
 T=~40s   解压完成,写入 .ok 标记
@@ -191,10 +193,10 @@ handlers.handleConvertStream
     ├─ 立即下发 {"type":"state","running":bool}
     └─ 循环读 chan → json.Marshal → "data: ...\n\n" + Flush
 
-前端 JobBus (IIFE)
-    └─ 单 EventSource → 广播给所有订阅的 Tab panel
-    └─ 每个 panel 用 "owning" 标志只响应自己发起的任务
-        ├─ type=log:append / 替换上条进度行
+前端 jobBus(api/jobs.ts,单例 EventSource)
+    └─ subscribe → 广播给所有调用过 useJobPanel 的视图
+    └─ 每个 useJobPanel 实例用 "owning" 标志只响应自己发起的任务
+        ├─ type=log:appendLog → 进度行原地覆盖,普通行追加
         ├─ type=done/error/cancelled:更新按钮 + 完成条 + reveal
         └─ type=state:同步 running 状态
 

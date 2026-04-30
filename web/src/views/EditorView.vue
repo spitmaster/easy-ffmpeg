@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, useTemplateRef, watch } from 'vue'
 import { editorApi, type ExportSettings, type Project } from '@/api/editor'
 import { useDirsStore } from '@/stores/dirs'
 import { useEditorStore } from '@/stores/editor'
@@ -98,17 +98,23 @@ async function onExportSubmit(settings: ExportSettings) {
   await store.flushSave()
   const body = { projectId: project.id, export: settings }
 
-  let preview: { command: string; outputPath: string }
+  // Local name avoids shadowing the `preview` composable above.
+  let dryRun: { command: string; outputPath: string }
   try {
-    preview = await editorApi.exportPreview(body)
+    dryRun = await editorApi.exportPreview(body)
   } catch (e) {
     alert('生成命令失败: ' + (e instanceof Error ? e.message : String(e)))
     return
   }
-  if (!(await modals.showCommand(preview.command))) return
+  if (!(await modals.showCommand(dryRun.command))) return
 
   exportOpen.value = false
   exportSidebarOpen.value = true
+
+  // Stop the preview playback before ffmpeg starts: the in-page video/audio
+  // decoder competes with the encoder for CPU and disk I/O on the same
+  // source file, and there's no reason to keep playback running during export.
+  preview.pause()
 
   const sendStart = async (overwrite: boolean): Promise<string> => {
     const { res, data } = await editorApi.startExport({ ...body, overwrite })
@@ -122,7 +128,7 @@ async function onExportSubmit(settings: ExportSettings) {
   }
 
   await job.startJob({
-    outputPath: preview.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
+    outputPath: dryRun.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
     totalDurationSec: totalDuration(project),
     request: () => sendStart(false),
   })
@@ -147,6 +153,11 @@ function isEditableFocus(): boolean {
 
 function onKeyDown(e: KeyboardEvent) {
   if (isEditableFocus()) return
+  // Editing is locked while an export is running (matches the visual
+  // overlay covering the workspace). Without this, hitting Space here
+  // would try to resume the just-paused preview against the file ffmpeg
+  // is currently encoding.
+  if (job.running.value) return
   switch (e.key) {
     case ' ':
       e.preventDefault()
@@ -187,7 +198,13 @@ function onKeyDown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => document.addEventListener('keydown', onKeyDown))
+// Use activated/deactivated rather than mounted/beforeUnmount: with
+// KeepAlive in App.vue this view stays mounted across tab switches, but
+// the document-level shortcuts (Space, S, Delete, Ctrl+Z, …) must only
+// fire while the editor is the visible tab — otherwise hitting Space
+// in Convert/Audio would toggle preview playback in the background.
+onActivated(() => document.addEventListener('keydown', onKeyDown))
+onDeactivated(() => document.removeEventListener('keydown', onKeyDown))
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeyDown)
   // Best-effort flush: don't await to keep navigation snappy.
@@ -208,6 +225,7 @@ watch(
 <template>
   <section class="flex h-full flex-col">
     <EditorTopBar
+      :locked="job.running.value"
       @open-video="openVideo"
       @open-projects="projectsOpen = true"
       @open-export="exportOpen = true"
@@ -215,7 +233,7 @@ watch(
 
     <div class="flex flex-1 overflow-hidden">
       <!-- Main column: preview / playbar / timeline / toolbar -->
-      <div class="flex flex-1 flex-col overflow-hidden">
+      <div class="relative flex flex-1 flex-col overflow-hidden">
         <div v-if="!hasProject" class="flex flex-1 flex-col items-center justify-center gap-2 text-fg-muted">
           <div class="text-base">尚未导入视频</div>
           <div class="text-xs">
@@ -264,6 +282,23 @@ watch(
           </EditorTimeline>
 
           <EditorToolbar />
+        </div>
+
+        <!-- Lock the editing surface (preview + playbar + timeline +
+             toolbar) while an export is running. The TopBar is disabled
+             via :locked above, the right-hand export sidebar (with the
+             cancel button) sits outside this overlay, and the global
+             TabNav stays interactive — so the user can switch tabs or
+             cancel the export, but can't accidentally edit clips while
+             ffmpeg is running. -->
+        <div
+          v-if="job.running.value"
+          class="pointer-events-auto absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-bg-base/60 backdrop-blur-[2px]"
+        >
+          <div class="text-sm text-fg-muted">导出中,编辑已锁定</div>
+          <div class="text-xs text-fg-subtle">
+            可在右侧面板取消导出,或切到其他 Tab。导出结束后自动解锁。
+          </div>
         </div>
       </div>
 

@@ -26,7 +26,7 @@
 
 ## 2. 构建脚本
 
-项目仓库根目录提供两个脚本,**各自**一次性产出全部 4 个 Web 平台产物 + 当前平台可编的桌面版:
+项目仓库根目录提供两个脚本,**各自**先把 Vue 前端编进 `web/dist/`,再一次性产出全部 4 个 Web 平台产物 + 当前平台可编的桌面版:
 
 | 脚本 | 平台 | 用法 |
 |------|------|------|
@@ -35,18 +35,30 @@
 
 两个脚本行为:
 
-1. 切到脚本所在目录
-2. 创建 `dist/`(存在则跳过)
-3. 依次编译 4 个 Web 产物,任一失败立即停下
+1. 切到脚本所在目录,创建 `dist/`(存在则跳过)
+2. **前端构建**:检查 `npm` 在 PATH;`cd web && npm install --no-audit --no-fund && npm run build` 把 Vue 源码编入 `web/dist/`
+3. 依次编译 4 个 Web 产物(Go 通过 `easy-ffmpeg/web` 包嵌入 `web/dist/`),任一失败立即停下
 4. 检测 `wails` 命令是否存在 → 在场则追加桌面版构建分支(按当前 OS 决定能编哪个)
 5. 列出产物
+
+> 顺序关键:Go 编译 import `easy-ffmpeg/web`,该包通过 `//go:embed all:dist` 引用 `web/dist/`。如果先 `go build` 而 `web/dist/` 不存在或过期,前端会缺资源。所以两个脚本都把"前端构建"放在 Go 构建之前,且任一步失败立即终止。
 
 ### 2.1 `build.sh` 核心逻辑
 
 ```bash
+# 前端构建(放最前)— v0.5.x 起 Vue 工程在 web/,产物在 web/dist/。
+build_frontend() {
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: npm not found. Install Node.js >= 20 to build the frontend." >&2
+        return 1
+    fi
+    (cd web && npm install --no-audit --no-fund && npm run build)
+}
+build_frontend
+
 build() {
     CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
-        go build -ldflags="-s -w -X main.Version=$VERSION" -o "dist/$3" ./cmd
+        go build -ldflags="$LDFLAGS" -o "dist/$3" ./cmd
 }
 
 build windows amd64 easy-ffmpeg.exe
@@ -54,30 +66,33 @@ build darwin  arm64 easy-ffmpeg-macos-arm64
 build darwin  amd64 easy-ffmpeg-macos-amd64
 build linux   amd64 easy-ffmpeg-linux
 
-# 桌面版分支(当前平台可编时追加)
-build_desktop() {
-    if ! command -v wails >/dev/null 2>&1; then
-        echo "==> wails CLI not found, skipping desktop build"
-        return
-    fi
-    case "$(uname -s)" in
-        Darwin)
-            (cd cmd/desktop && wails build -platform darwin/arm64 -o ../../dist/easy-ffmpeg-desktop-macos-arm64.app)
-            (cd cmd/desktop && wails build -platform darwin/amd64 -o ../../dist/easy-ffmpeg-desktop-macos-amd64.app)
-            ;;
-        Linux)
-            (cd cmd/desktop && wails build -o ../../dist/easy-ffmpeg-desktop-linux)
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            (cd cmd/desktop && wails build -o ../../dist/easy-ffmpeg-desktop.exe)
-            ;;
-    esac
-}
-
-build_desktop
+# 桌面版分支(当前平台可编时追加,详见 §8)
 ```
 
-### 2.2 为什么 Web 版能从 Windows 跨编 4 平台?
+### 2.2 `build.bat` 前端段
+
+```batch
+where npm >nul 2>&1 || (echo ERROR: npm not found && goto :fail)
+pushd web
+call npm install --no-audit --no-fund || (popd & goto :fail)
+call npm run build                    || (popd & goto :fail)
+popd
+```
+
+`npm run build` 执行 `vue-tsc --noEmit && vite build`,既做类型检查又生成产物;任一阶段失败直接退出。
+
+### 2.3 开发态(不走脚本)
+
+调试时跑两个进程:
+
+```bash
+go run ./cmd          # 后端 8080
+cd web && npm run dev # Vite dev server 5173,/api/* 经 vite.config.ts 代理到 8080
+```
+
+Hot Reload + 真实后端 API。生产构建仍按 §2.1 的顺序走。
+
+### 2.4 为什么 Web 版能从 Windows 跨编 4 平台?
 
 - `CGO_ENABLED=0`:项目共享层无 cgo,纯 Go 静态链接
 - Go 的跨平台编译是内建能力;只需设 `GOOS`/`GOARCH` 环境变量
@@ -220,15 +235,16 @@ go install github.com/wailsapp/wails/v2/cmd/wails@latest
 wails doctor   # 自检环境是否齐全
 ```
 
-### 8.2 首次拉取 Wails 依赖
+### 8.2 首次拉取依赖(Go + 前端)
 
 仓库根目录执行(只需一次):
 
 ```bash
-go mod tidy
+go mod tidy            # 拉 Wails + 后端依赖
+(cd web && npm install) # 拉 Vue / Vite / Pinia / Tailwind 等前端依赖
 ```
 
-这会把 Wails 及其传递依赖写入 `go.mod` / `go.sum`。Web 版的 `build.bat` / `build.sh` **不依赖** Wails,但 `go mod tidy` 跨整个 module 扫描,因此一次 tidy 后两个产物的依赖图都齐全。
+`go mod tidy` 把 Wails 及其传递依赖写入 `go.mod` / `go.sum`(Web 版的 `cmd/main.go` 不 import Wails,但 `go mod tidy` 跨整个 module 扫描,一次 tidy 后两个产物的依赖图都齐全)。`npm install` 在 `web/node_modules/` 下落地前端依赖;后续 `build.sh` / `build.bat` 也会自己跑一次,但首次手动跑可让 IDE 类型补全立即生效。
 
 ### 8.3 手动单独构建桌面版
 
@@ -245,6 +261,8 @@ wails build -clean -o ../../dist/easy-ffmpeg-desktop-linux       # Linux 本机
 
 | 问题 | 原因 | 解决 |
 |------|------|------|
+| `npm: command not found` / `ERROR: npm not found` | 没装 Node.js 或不在 PATH | 装 Node.js ≥ 20 LTS;v0.5.x 起前端必须先编出 `web/dist/` |
+| `web/embed.go: pattern all:dist: no matching files found` | `web/dist/` 不存在 | 跑过 `cd web && npm run build`?build.sh / build.bat 顺序保障了这一步 |
 | `embedded_darwin.go: pattern darwin/darwin.7z: no matching files found` | 对应平台的 7z 不存在 | 准备好所有 3 个平台的 .7z 文件后再编译 |
 | 编译后体积过大 | 可能误嵌了未压缩的二进制 | 确认 `embedded_<os>.go` 的 embed 指令是 `<os>/<os>.7z` 而非目录 |
 | Windows 运行弹出 cmd 黑窗 | 老版本 `-H=windowsgui` 被移除(Web 模式需要控制台) | 正常行为;未来若要纯后台模式再讨论 |

@@ -27,7 +27,20 @@ onMounted(async () => {
     <TopBar />
     <TabNav />
     <main class="flex-1 overflow-auto bg-bg-base">
-      <RouterView />
+      <!-- KeepAlive preserves view state across tab switches. Without this,
+           leaving the editor (or any tab) while a job is running unmounts
+           the view: useJobPanel's `owning` flag and the export sidebar
+           visibility are local state, so on return the SSE events for the
+           still-running job are no longer claimed by anyone and the panel
+           appears empty. KeepAlive keeps the instance alive and only
+           toggles activation; the EditorView migrates its document-level
+           keydown listener to onActivated/onDeactivated so its shortcuts
+           don't fire while another tab is in front. -->
+      <RouterView v-slot="{ Component }">
+        <KeepAlive>
+          <component :is="Component" />
+        </KeepAlive>
+      </RouterView>
     </main>
   </div>
 

@@ -72,7 +72,10 @@ func (m *Manager) Start(binary string, args []string) error {
 		return fmt.Errorf("another job is running")
 	}
 	cmd := exec.Command(binary, args...)
-	procutil.HideWindow(cmd)
+	// Long-running encode: drop priority on Windows so the UI stays
+	// responsive (libx264 -threads 0 otherwise saturates all cores at
+	// NORMAL priority and the cursor stutters).
+	procutil.HideWindowLowPriority(cmd)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		m.mu.Unlock()

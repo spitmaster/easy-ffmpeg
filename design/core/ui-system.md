@@ -1,129 +1,192 @@
 # 共享 UI 设计系统(产品设计)
 
-> 本文档定义跨 Tab 共用的视觉规范、控件家族、对话框约定、导出体验流。各 Tab 的具体布局见对应的 `tabs/<tab>/product.md`。前端 JS 架构(IIFE 模块、SSE、`createJobPanel` 实现细节)见 [frontend.md](frontend.md)。
+> 本文档定义跨 Tab 共用的视觉规范、设计 token、控件家族、对话框约定、导出体验流。各 Tab 的具体布局见对应的 `tabs/<tab>/product.md`。前端工程结构、Pinia store、composable 实现细节见 [frontend.md](frontend.md)。
+>
+> v0.5.x 起,样式从手写 CSS + CSS 变量整体迁到 **TailwindCSS + tokens.css**:配色 / 字体 / 圆角 / 阴影通过 `:root` CSS 变量集中,Tailwind 在 `tailwind.config.js` 用 `rgb(var(--…) / <alpha-value>)` 把它们暴露成 utility class。
 
 ## 1. 整体布局
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│  🎬  Easy FFmpeg     程序版本    FFmpeg 8.1 · 嵌入    退出     │  ← topbar
+│  🎬  Easy FFmpeg     v0.5.1     FFmpeg 8.1 · 嵌入    退出     │  ← TopBar
 ├──────────────────────────────────────────────────────────────┤
-│  [视频转换][音频处理][单视频剪辑][媒体信息*][设置*]             │  ← tabs (*disabled)
+│  [视频转换][音频处理][单视频剪辑][媒体信息*][设置*]              │  ← TabNav (* 占位)
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│                  主要内容区域(按 active tab 切换 panel)       │
+│                  RouterView(按当前路由渲染对应 View)            │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- Header 固定顶部、tabs 紧随其后、main 区域自然流式(CSS flex column)。
-- 已启用 Tab:视频转换 / 音频处理 / 单视频剪辑;占位 disabled:媒体信息 / 设置。
+DOM 结构(`App.vue`):
 
-## 2. 配色系统
-
-使用 CSS 自定义属性集中管理,便于后续主题化:
-
-```css
---bg:              #0f1419   /* 最底层 */
---surface:         #1a1f26   /* 卡片/表单背景 */
---surface-2:       #232831   /* hover / 次要元素 */
---border:          #2a3038
---border-strong:   #3a4048
---text:            #e5e7eb
---muted:           #9ca3af
---accent:          #10b981   /* 主行动绿 */
---accent-hover:    #059669
---danger:          #ef4444
---warning:         #f59e0b
---info:            #3b82f6   /* 命令预览的蓝 */
+```html
+<div class="flex h-full flex-col">
+  <TopBar />     <!-- shrink-0 h-12 -->
+  <TabNav />     <!-- shrink-0 -->
+  <main class="flex-1 overflow-auto bg-bg-base">
+    <RouterView />
+  </main>
+</div>
 ```
 
-整体风格:**深色高对比、柔和圆角、绿色强调 CTA**。
+四个全局对话框(Picker / ConfirmCommand / ConfirmOverwrite / PrepareOverlay)在 App 根 mount 一次,通过 `useModalsStore` 命令式触发并 Promise 等待。
 
-只有一套深色主题。颜色全部用 CSS 变量,切换主题只需换 `:root` 变量值。若未来要加浅色主题:`prefers-color-scheme: light { :root { --bg: #fff; ... } }`。
+## 2. 设计 token(`web/src/styles/tokens.css`)
 
-## 3. 顶栏(topbar)
+颜色全部存为 RGB 三元组(无 `rgb()` 包裹),让 Tailwind 的 `<alpha-value>` 插值生效:
 
-| 元素 | 位置 | 说明 |
-|------|------|------|
-| 🎬 Logo + "Easy FFmpeg" | 左 | |
-| `<span class="version-chip">` | 右 | 程序版本号(`-ldflags -X main.Version=...` 注入,默认 `dev`) |
-| `<span class="status-chip">` | 右 | FFmpeg 版本状态 + 点击可打开缓存目录 |
-| 退出按钮 | 最右 | `.btn-ghost` 样式 |
+```css
+:root {
+  /* 背景层 — base < panel < elevated */
+  --color-bg-base:     18 18 20;     /* 页面底色 */
+  --color-bg-panel:    28 28 32;     /* TopBar / TabNav / 子 panel */
+  --color-bg-elevated: 38 38 44;     /* 卡片、模态、chip */
 
-状态 chip 的三种状态:
+  /* 前景层 — base 正文,muted 标签,subtle 提示 */
+  --color-fg-base:    224 224 228;
+  --color-fg-muted:   168 168 176;
+  --color-fg-subtle:  120 120 128;
 
-- `.ok.clickable` → 绿色边框 + cursor pointer + hover 淡绿背景
-- `.err` → 红色边框,不可点击
-- 加载中 → 灰色边框,"检测中..."
+  /* 边框 */
+  --color-border-base:   56 56 62;
+  --color-border-strong: 92 92 100;
 
-后端 `GetFFmpegVersion()` 返回完整首行;前端 `parseFFmpegVersion` 提取主版本号(`8.1` / `6.1.1` / `N-119999-g1234`),最终 chip 显示:`FFmpeg 8.1 · 嵌入`,tooltip 保留完整版本串。
+  /* 强调色 — 主行动 + hover */
+  --color-accent:       96 165 250;  /* sky-400 */
+  --color-accent-hover: 129 184 255;
+
+  /* 状态色 */
+  --color-danger:  248 113 113;      /* red-400 */
+  --color-success: 74 222 128;       /* green-400 */
+}
+```
+
+Tailwind 通过 `tailwind.config.js` 把这些 token 映射成 utility:
+
+```js
+// tailwind.config.js (节选)
+colors: {
+  bg:     { base: 'rgb(var(--color-bg-base) / <alpha-value>)', panel: ..., elevated: ... },
+  fg:     { base: '...', muted: '...', subtle: '...' },
+  border: { base: '...', strong: '...' },
+  accent: { DEFAULT: '...', hover: '...' },
+  danger:  '...',
+  success: '...',
+}
+```
+
+约定:**所有视图代码通过 utility 用色**(`bg-bg-panel` / `text-fg-muted` / `border-border-strong` / `text-accent` / `text-danger` / `text-success`),不直接写 `#abc` 或 hex。换主题时只改 `tokens.css`,utilities 自动跟随。
+
+字体:`tailwind.config.js` 注册 `font-sans`(`-apple-system, BlinkMacSystemFont, Segoe UI, Microsoft YaHei, sans-serif`)和 `font-mono`(`ui-monospace, Menlo, Consolas`)。
+
+整体风格:**深色高对比、紧凑 NLE 风(类 Premiere / Resolve)、蓝色强调 CTA**。当前只有一套深色主题,未来加浅色主题可在 `:root` 之外加 `prefers-color-scheme: light` 块。
+
+## 3. TopBar(`components/layout/TopBar.vue`)
+
+`<header class="flex h-12 shrink-0 items-center justify-between border-b border-border-base bg-bg-panel px-4">`,从左到右:
+
+| 元素 | 说明 |
+|------|------|
+| 🎬 + "Easy FFmpeg" | 文本商标 |
+| 程序版本 chip | `v{store.version}`,`bg-bg-elevated text-fg-muted font-mono`,空载时不渲染 |
+| FFmpeg 状态 chip | 三态由 `useFfmpegStore.tone` 决定:`pending` / `ok` / `err`;`ok` 态点击调 `fsApi.reveal(cacheDir)` 打开缓存目录,`title` 显示完整版本串 |
+| 退出按钮 | `border border-border-strong`,点击 `quitApi.quit()` 后 Teleport 一个 👋 全屏覆盖告知用户可关页 |
+
+退出后会清场所有 `<audio>/<video>`(pause / removeAttribute('src') / load()),避免编辑器预览继续在后台播放。
 
 ## 4. 控件家族
 
-### 4.1 `.btn` 按钮
+控件不再以 BEM 类(`.btn-primary` / `.status-chip` 等)出现,而是直接用 Tailwind utility 表达。下表是高频组合的"模式语言":
 
-- `.btn`:默认,surface 背景 + 弱边框
-- `.btn-primary`:绿色主行动按钮(开始转码)
-- `.btn-danger`:红色边框 + 透明,hover 填红(取消)
-- `.btn-ghost`:透明,低调辅助(关闭、退出、上一级)
-- `.btn-icon`:紧凑 padding,适合 emoji 图标按钮(📂)
+### 4.1 按钮
 
-### 4.2 `.status-chip`
+| 模式 | 典型 utility 组合 |
+|------|------|
+| 主行动(开始转码 / 开始执行) | `rounded bg-accent px-4 py-1.5 text-xs text-bg-base hover:bg-accent-hover disabled:opacity-50` |
+| 次要(选择文件 / 选择目录) | `rounded border border-border-strong bg-bg-elevated px-3 py-1.5 text-xs hover:bg-bg-panel` |
+| 危险(取消) | `rounded border border-danger px-4 py-1.5 text-xs text-danger hover:bg-danger/10 disabled:opacity-40` |
+| 幽灵(关闭 / × / 退出) | `text-fg-muted hover:text-fg-base` 或不加边框的 `px-2 py-1` |
+| 图标按钮(📂) | `shrink-0 rounded border border-border-strong bg-bg-elevated px-3 py-1.5 text-xs disabled:opacity-40` |
 
-圆角 999px 丸形徽章,`ok` 和 `err` 两种语义色,可选 `.clickable` 启用交互。
+### 4.2 状态 chip(TopBar)
 
-### 4.3 `.command-preview`
+`rounded px-2 py-1 transition-colors` + 三态 class:
 
-等宽字体,`var(--info)` 蓝色,深色代码块背景。
+- `bg-bg-elevated text-fg-muted` — pending(检测中)
+- `bg-success/15 text-success` — ok(可点击的话再加 `cursor-pointer hover:bg-success/25`)
+- `bg-danger/15 text-danger` — err
 
-### 4.4 `.log` 日志区
+### 4.3 命令预览块
 
-- 黑底(`#000`)、白字(`#d4d4d4`)、等宽字体
-- `flex: 1 + min-height: 0 + overflow: auto`:在 convert / audio 两个 Tab 里自动填充剩余垂直空间
-- 在单视频剪辑 Tab 用 `.editor-export-status .log { max-height: 200px }` 约束高度,保证导出期间顶部的预览 / 时间轴仍可见
-- 子元素 `.log-line` 修饰类:
-  - `.progress`(暖黄)→ FFmpeg 进度行
-  - `.success`(绿色)→ "✓ 完成"
-  - `.error`(红色)→ "✗ 失败"
-  - `.info`(蓝色)→ 命令预览回显
-  - `.cancelled`(黄色)→ "! 已取消"
-
-### 4.5 `.segmented`(音频 Tab 模式切换)
-
-行内 flex 容器,盛三个 `.seg` 按钮;活动按钮有 `.active` 类(surface-2 背景 + 主色文字)。`.seg:disabled` 半透明 + not-allowed。
-
-### 4.6 `.progress-wrap`(任务进度条,三 Tab 共用)
-
-```text
-[━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━━━━━]   42.5%
+```html
+<pre class="overflow-auto rounded border border-border-base bg-bg-base p-2
+            font-mono text-xs leading-relaxed text-fg-base
+            whitespace-pre-wrap break-all">{{ command }}</pre>
 ```
 
-- DOM:`<div class="progress-wrap"><div class="progress-bar"><div class="progress-fill" /></div><span class="progress-text">…</span></div>`
-- 进度条 8px 高、圆角;轨道 `--surface-2` 背景,填充 `--accent` 绿色,`width` 用 150ms linear transition(太短抖动、太长跟不上 fast convert)
-- 百分比标签 12px、`tabular-nums` 防数字位数变化时位置抖动、`min-width: 38px` 留位
-- 由 `createJobPanel` 共用逻辑驱动,从同一行日志同时取数据(详见 §6),空闲态加 `.hidden` 整块折叠
+模态版还会启用 `cursor-pointer`(整块点击复制,见 §5.1)。
 
-### 4.7 `.merge-list`(音频合并 Tab 的可排序文件列表)
+### 4.4 日志区(`components/job/JobLog.vue`)
 
-`<ul>`:空态用 `:empty::before` 伪元素显示"尚未添加文件";每项带 `☰` 抓手(装饰)、编号、文件名(ellipsis)、元信息(codec · 声道 · kbps · 时长)、↑/↓/🗑 三个操作按钮。详见 [tabs/audio/product.md](../tabs/audio/product.md)。
+三 Tab 共用的子组件,绑定 `useJobPanel` 暴露的 ref:
 
-### 4.8 `.editor-*`(单视频剪辑 Tab 专用)
+- 容器:`bg-bg-base text-fg-base font-mono text-xs flex flex-col overflow-auto`(剪辑器导出场景下父容器约束最大高,保持时间轴可见)
+- 行 class:基础 `text-fg-base`,修饰类 `text-warning`(进度暖色)/ `text-success`(完成)/ `text-danger`(失败)/ `text-accent`(命令回显)/ `text-fg-muted`(已取消等淡色)
+- 进度行原地覆盖在 `useJobPanel.appendLog` 内完成,渲染层只 `v-for` 显示当前快照,DOM 节点不爆
 
-样式集中在 `editor/editor.css`,用 `#panel-editor` 前缀避免泄漏到其它 Tab。详见 [tabs/editor/product.md](../tabs/editor/product.md) §UI。
+### 4.5 segmented(音频 Tab 模式切换)
+
+`AudioView.vue` 顶部三按钮(转换 / 提取 / 合并),活动按钮 `bg-bg-elevated text-accent`,非活动 `text-fg-muted hover:text-fg-base`,公用一个 `useJobPanel`,切换时只换子组件不换面板。
+
+### 4.6 进度条(`<JobLog>` 内,见 §6.1)
+
+```html
+<div class="h-1 w-full overflow-hidden rounded bg-bg-elevated">
+  <div class="h-full bg-accent transition-[width] duration-150 ease-linear"
+       :style="{ width: progress * 100 + '%' }" />
+</div>
+<span class="tabular-nums text-fg-muted">{{ percent }}%</span>
+```
+
+`tabular-nums` 防数字位数变化时整行抖动;空闲态整块用 `v-if="progressVisible"` 折叠。
+
+### 4.7 音频合并文件列表(`AudioMergeMode.vue`)
+
+可排序列表:`<ul>` 加 `divide-y divide-border-base`,空态用 `v-if`/`v-else` 显示"尚未添加文件";每项带 `☰` 抓手(装饰)、编号、文件名(`truncate`)、元信息(codec · 声道 · kbps · 时长)、↑/↓/🗑 三个操作按钮。
+
+### 4.8 编辑器子组件
+
+样式集中在 `components/editor/*.vue` 各自的 scoped 区(只在必要时);布局用 utility。详见 [tabs/editor/product.md](../tabs/editor/product.md) §UI。
 
 ## 5. 对话框约定
 
-### 5.1 自绘 Confirm 对话框(替代浏览器原生 `window.confirm`)
+四个全局对话框都通过 `useModalsStore` 暴露 Promise API:`showCommand` / `showOverwrite` / `showPicker` 返回各自类型的 Promise。任意视图都可以 `await` 这些函数,不用 prop 透传或事件总线。
 
-由 `Confirm` IIFE 提供,两种形态共用同一个状态机:
+### 5.1 命令预览(`ConfirmCommandModal.vue`)
 
-- **覆盖确认(`Confirm.overwrite(path)`)**:460px 宽 `.modal-confirm`,header "目标文件已存在" + × 关闭,body 一句中文提示 + 等宽字体的目标路径(`break-all` 让长路径换行),footer "取消" / "覆盖"。背景半透明 + box-shadow 浮起。Enter=覆盖 / Esc=取消。
-- **命令预览(`Confirm.command(cmd)`)**:720px 宽 `.modal-command`,header "即将执行" + × 关闭,body "下列 ffmpeg 命令将被执行" + `<pre class="confirm-command">` 等宽字体 280px 高滚动 + 提示语,footer "📋 复制" / "取消" / "开始执行"。`<pre>` 整块 `cursor: pointer`,点击或点 📋 都会复制全文(优先 `navigator.clipboard.writeText`,失败回退到隐藏 `<textarea> + execCommand("copy")`),提示语短暂变 accent 色"✓ 已复制"。Enter=执行 / Esc=取消(Enter 在 `<pre>` 上不触发,留给文本选择)。
+```text
+┌─ 即将执行 ─────────────────────────────────┐
+│  下列 ffmpeg 命令将被执行,确认后开始:        │
+│  ┌──────────────────────────────────────┐  │
+│  │ ffmpeg -y -i "..." -filter_complex   │  │ ← 整块 click-to-copy
+│  │   "..." -map [v] -map [a] ...        │  │
+│  └──────────────────────────────────────┘  │
+│  点击命令框可复制                              │
+│  ─────────────────────────────────────────  │
+│  [📋 复制]                  [取消] [开始执行] │
+└────────────────────────────────────────────┘
+```
 
-两个对话框都用 `Promise<boolean>` 返回:`createJobPanel.start` 在真正发起 POST 前先 `await Confirm.command(...)`,409 返回时再 `await Confirm.overwrite(...)`,代码线性、无回调地狱。
+- 720px 宽,`<pre>` 等宽字体 280px 最大高滚动
+- 整块点击复制,优先 `navigator.clipboard.writeText`,失败回退 `<textarea> + execCommand("copy")`(WebView2 / 旧 WebKit 兜底);提示语短暂变 accent 色"✓ 已复制"
+- Enter=开始执行;Esc=取消;Enter 在 `<pre>` 上不触发(留给文本选择)
 
-### 5.2 文件/目录选择模态框
+### 5.2 覆盖确认(`ConfirmOverwriteModal.vue`)
+
+460px 宽。header "目标文件已存在" + ×;body 一句中文 + 等宽字体路径(`break-all`);footer "取消" / "覆盖"。Enter=覆盖 / Esc=取消。
+
+### 5.3 文件 / 目录选择(`PickerModal.vue`)
 
 ```text
 ┌─────────────────────────────────────────────────────┐
@@ -134,26 +197,18 @@
 │ 📁 Desktop                                           │
 │ 📁 Documents                                         │
 │ 📄 video.mp4                             12.3 MB    │
-│ 📄 audio.wav                              3.1 MB    │
-│    ...                                               │
 ├─────────────────────────────────────────────────────┤
 │ 选中一个文件后点击确认      [取消]  [选择文件]       │
 └─────────────────────────────────────────────────────┘
 ```
 
 - 三层:header / breadcrumb-bar / body / footer
-- breadcrumb-bar 三元素:可选的盘符下拉 + 可编辑的路径输入 + 上一级按钮
-- body 条目列表:图标 + 名字 + 元信息(文件大小)
-- 单击选中(高亮),双击目录进入 / 双击文件直接完成选择
-- 排序:目录在前,文件在后,同类按名字字典序(不区分大小写);以 `.` 开头的条目不显示
+- breadcrumb-bar:可选盘符下拉(Windows)+ 可编辑路径输入 + 上一级 ↑
+- body:目录在前,文件在后,同类按字典序(不区分大小写);以 `.` 开头条目隐藏
+- 单击选中(`bg-bg-elevated`),双击目录进入 / 双击文件直接完成
+- 数据源:`fsApi.home()` / `fsApi.list(path)` / `fsApi.reveal(path)`(后端驱动,因为浏览器 `<input type=file>` 拿不到真实路径)
 
-由于浏览器的 `<input type=file>` 出于安全限制拿不到本地真实路径,而 FFmpeg 需要真路径,所以文件/目录选择走**后端驱动的**模态框:
-
-- `GET /api/fs/home` → 起始路径
-- `GET /api/fs/list?path=<dir>` → 返回条目列表 + 父目录 + Windows 盘符
-- 模态框支持:面包屑路径输入框(支持回车跳转)、上一级 ↑ 按钮、Windows 盘符下拉框、空目录提示
-
-### 5.3 首次启动加载遮罩
+### 5.4 解压加载遮罩(`PrepareOverlay.vue`)
 
 ```text
 ┌─────────────────────────────────────────┐
@@ -166,24 +221,22 @@
 └─────────────────────────────────────────┘
 ```
 
-- 全屏毛玻璃 `backdrop-filter: blur(4px)`
-- 居中卡片 460px 宽,内含标题 + 副文案 + 进度条 + 百分比 + 当前文件
-- 进度条:绿→蓝渐变、0.25s 缓动
-- 就绪时 `.fading` 类触发 0.3s 透明度淡出,然后 `display:none`
-- 解压失败时不隐藏,副文案变成错误信息,进度条变红
+- 全屏 `backdrop-blur-sm`(用 Tailwind 的 backdrop utility)
+- 居中卡片 460px 宽:标题 + 副文案 + 进度条 + 百分比 + 当前文件
+- 进度条:`bg-success → bg-accent` 渐变(自定义 background-image),0.25s 缓动
+- ready 时叠 `transition-opacity duration-300` 淡出后 `v-if=false` 卸载
+- 错误态:不卸载,副文案变红、进度条变红
 
-### 5.4 模态弹窗的统一约定
+### 5.5 模态弹窗的统一约定
 
-所有自绘 dialog(覆盖确认 / 命令预览 / 编辑器导出配置 / 剪辑记录列表 / 文件选择器):
-
-- **不响应**点击背景空白区域 —— 太容易误触把正在配置的导出操作丢掉
-- **× 关闭按钮**位于右上角(`.modal-header` flex + `.spacer { flex: 1 }`),与"取消"按钮等价
-- **Esc** 键关闭(等价于"取消"),**Enter** 在确认型 dialog 上等价于"确认"
-- 焦点:打开时聚焦主按钮,关闭时还原到打开前的元素(`lastFocused`)
+- **不响应**点背景空白 — 误触代价高
+- × 关闭 / Esc / 取消 三种方式退出,行为等价
+- Enter 在确认型 dialog = 主行动
+- 焦点:打开聚焦主按钮,关闭还原前一个聚焦元素
 
 ## 6. 跨 Tab 共用的导出体验
 
-视频转换 / 音频处理 / 单视频剪辑三个 Tab 都通过 `createJobPanel`(见 [frontend.md §3](frontend.md))触发任务,共享同一套交互流:
+视频转换 / 音频处理 / 单视频剪辑都通过 `useJobPanel` + `useModalsStore` 触发任务,共享同一套交互流(详见 [frontend.md §6–§7](frontend.md)):
 
 ```text
 点击"开始"按钮
@@ -194,62 +247,52 @@
    返回 200 + {command: "ffmpeg -y -i ... <out>"}
     │
     ▼
-② 自绘"命令预览"dialog(replaces window.confirm)
-   ┌─ 即将执行 ──────────────────────────────────┐
-   │ 下列 ffmpeg 命令将被执行,确认后开始:        │
-   │ ┌──────────────────────────────────────┐  │
-   │ │ ffmpeg -y -i "..." -filter_complex   │  │ ← click-to-copy 整块
-   │ │   "..." -map [v] -map [a] ...        │  │
-   │ └──────────────────────────────────────┘  │
-   │ 点击命令框可复制                            │
-   │ ─────────────────────────────────────────  │
-   │ [📋 复制]                  [取消] [开始执行] │
-   └────────────────────────────────────────────┘
-   关闭路径:取消 / × / Esc / 点 [开始执行]
+② await modals.showCommand(cmd)  → ConfirmCommandModal Promise<boolean>
     │
     ▼ 用户确认
 ③ 后端真实 POST       {…params}
     │
     ├─ 409 + {existing:true, path}
     │     ▼
-    │   自绘"覆盖确认"dialog → 同意带 overwrite:true 重发;拒绝中止
+    │   await modals.showOverwrite(path) → 同意带 overwrite:true 重发;拒绝中止
     │
-    └─ 200 → SSE 开始推日志 + 解析 `time=` 算进度条百分比
+    └─ 200 → SSE(jobBus)开始推日志 → useJobPanel.appendLog 解析 time= 算进度
         │
         ▼
-       ④ 终态:done / error / cancelled → 完成条 + 进度条短暂停 100% 再隐藏
+       ④ 终态:done / error / cancelled
+          → 完成条 + 进度条 done 后 100% 停 600ms 再隐藏
 ```
 
 ### 6.1 进度条
 
-- **位置**:动作行下方一条独立的轨 + 百分比标签(`.progress-wrap`),三 Tab 各一份,由 `createJobPanel` 公共逻辑驱动
-- **数据源**:解析 ffmpeg stderr 里的 `time=HH:MM:SS.ms`(当前进度)和首次出现的 `Duration: HH:MM:SS.ms`(总时长)。编辑器导出时 `panel.start({ totalDurationSec })` 显式传节目时间总长,比 `Duration:`(源文件长度)更准
-- **生命周期**:启动 → 0% → 跟随 `time=` 实时增长 → `done` 停 100% 600ms 后隐藏 → `error/cancelled/409 取消` 立即隐藏
+- **位置**:动作行下方一条独立的轨 + 百分比标签,三 Tab 各一份(`<JobLog>` 内),由 `useJobPanel` 公共逻辑驱动
+- **数据源**:解析 ffmpeg stderr 里的 `time=HH:MM:SS.ms`(当前进度)和首次出现的 `Duration: HH:MM:SS.ms`(总时长)。编辑器导出时 `useJobPanel.startJob({ totalDurationSec })` 显式传节目时间总长,比 `Duration:`(源文件长度)更准
+- **生命周期**:启动 → 0% → 跟随 `time=` 实时增长 → `done` 停 100% 600ms 后隐藏 → `error/cancelled` / 启动失败立即隐藏
 
-### 6.2 命令预览 dialog(dryRun 协议)
+### 6.2 命令预览(dryRun 协议)
 
-- 协议:所有三个 endpoint 都接受 `dryRun: true`,返回 `{ok, dryRun, command}` 不动文件不启进程;merge mode 的临时 list 文件在 dryRun 路径上立即 cleanup
-- UI:720px 宽 `.modal-command`,`<pre class="confirm-command">` 用等宽字体最高 280px 高滚动;click-to-copy 用 `navigator.clipboard.writeText`,失败回退到隐藏 `<textarea> + execCommand("copy")`
+- 协议:所有三个 endpoint 都接受 `dryRun: true`,返回 `{ok, dryRun, command}`,不动文件不启进程;merge mode 的临时 list 文件在 dryRun 路径上立即 cleanup
+- UI:见 §5.1
 - 接管 Enter / Esc 全局键
 
-### 6.3 覆盖确认 dialog
+### 6.3 覆盖确认
 
-- 协议:未带 `overwrite:true` 时,`os.Stat(outPath)` 命中则返回 `409 + {existing:true, path}`
-- UI:460px 宽 `.modal-confirm`,等宽字体显示路径(`break-all`),Enter=覆盖 / Esc=取消
-- 三 endpoint 协议统一,`createJobPanel.start` 一份代码处理所有 Tab
+- 协议:未带 `overwrite:true` 时,后端 `os.Stat(outPath)` 命中 → `409 + {existing:true, path}`
+- UI:见 §5.2
+- 三 endpoint 协议统一,`useJobPanel` 调用方一份代码处理所有 Tab(各 View 自己写一段 sendStart 包覆盖重试,沿用 v0.5.0 起的 ConvertView 模板)
 
 ## 7. 已知视觉问题
 
-- **字体**:用的是 system-ui 堆栈 `-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif`。在部分 Linux 发行版上可能 fallback 到难看的 DejaVu Sans。
-- **模态框尺寸在小屏**:760px 固定宽,移动端会溢出 `max-width: 90vw`。移动端 UX 未认真设计。
-- **编辑 Tab 在矮屏**:时间轴高度固定 140px,预览用 `minmax(0, 1fr)` 弹性占用;窄屏下预览会变得较小,后续可加"预览全屏"按钮。
-- **merge 排序手势**:目前只用 ↑/↓ 按钮,没做拖拽排序。列表很长时效率偏低。
+- **字体**:`-apple-system, BlinkMacSystemFont, Segoe UI, Microsoft YaHei, sans-serif`。在部分 Linux 发行版上仍可能 fallback 到 DejaVu Sans
+- **模态在小屏**:固定宽度,移动端会溢出 `max-w-[90vw]`;移动 UX 未认真设计
+- **编辑 Tab 在矮屏**:时间轴高度固定,预览区域弹性占用;窄屏下预览偏小,后续可加"预览全屏"按钮
+- **merge 拖拽排序**:目前只用 ↑/↓ 按钮,没做原生拖拽;长列表效率偏低
 
 ## 8. 国际化
 
 全中文硬编码,未做 i18n 基础设施。后续要做:
 
-- 提取所有中文文案到 `i18n/zh.json`、`en.json`
+- 提取所有中文文案到 `web/src/i18n/{zh,en}.json`,接入 vue-i18n 或类似库
 - 前端按 `navigator.language` 或用户设置选择
 - 后端的错误消息也需要国际化(目前返回英文 `error: ...`)
 
