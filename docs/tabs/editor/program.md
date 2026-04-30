@@ -1,6 +1,8 @@
 # 单视频剪辑器 — 程序设计
 
 > 模块代码结构、SOLID 分层、接口契约、独立编译路径。对应产品设计:[product.md](product.md)。共享后端模块见 [core/modules.md](../../core/modules.md);前端架构见 [core/frontend.md](../../core/frontend.md)。
+>
+> **v0.6.0 架构抽取(M3 完成)**:`Clip` / 时间轴纯函数(`Split`/`DeleteClip`/`Reorder`/`TrimLeft`/`TrimRight`/`SetProgramStart`/`ClipAtProgramTime`)/ 单轨 filter 构造(`BuildVideoTrackFilter`/`BuildAudioTrackFilter`/`PlanSegments`)/ codec 归一化 / `ExportSettings` / 通用 ports(`Clock`/`JobRunner`/`PathResolver`)已抽到 [editor/common/](../../../editor/common/),与 `multitrack/` 共用。`editor/domain/` 通过 type alias + 函数变量 re-export 保持外部 API 表面字节级不变。本文档继续作为单视频专属语义(`Project` / `Source` / schema 迁移 / `BuildExportArgs` 整体装配)的描述。
 
 ---
 
@@ -28,12 +30,10 @@ editor/
 │   ├── export.go                   BuildExportArgs(Project) → []string
 │   └── export_test.go
 │
-├── ports/                          编辑器依赖的抽象(Dependency Inversion)
-│   ├── repository.go               ProjectRepository 接口
-│   ├── prober.go                   VideoProber 接口
-│   ├── runner.go                   JobRunner 接口
-│   ├── paths.go                    PathResolver 接口
-│   └── clock.go                    Clock 接口
+├── ports/                          单视频专属端口(v0.6.0+ 收窄)
+│   ├── repository.go               ProjectRepository 接口(依赖 domain.Project)
+│   └── prober.go                   VideoProber 接口
+│   # JobRunner / PathResolver / Clock 已抽到 editor/common/ports/(多轨共用)
 │
 ├── storage/                        ports.ProjectRepository 的 JSON 实现
 │   ├── jsonrepo.go
@@ -153,16 +153,17 @@ import (
     "net/http"
 
     "easy-ffmpeg/editor/api"
+    commonports "easy-ffmpeg/editor/common/ports"
     "easy-ffmpeg/editor/ports"
     "easy-ffmpeg/editor/storage"
 )
 
 type Deps struct {
-    Prober  ports.VideoProber
-    Runner  ports.JobRunner
-    Paths   ports.PathResolver
-    Clock   ports.Clock        // 可为 nil → 用 wallClock
-    DataDir string             // e.g. "~/.easy-ffmpeg/projects"
+    Prober  ports.VideoProber           // 单视频专属
+    Runner  commonports.JobRunner       // 共享(多轨同接口)
+    Paths   commonports.PathResolver    // 共享
+    Clock   commonports.Clock           // 共享。可为 nil → 用 wallClock
+    DataDir string                      // e.g. "~/.easy-ffmpeg/projects"
 }
 
 type Module struct {
@@ -366,7 +367,7 @@ func (r *JSONRepo) loadOrRebuildIndex() error
 type ProjectHandlers struct {
     repo   ports.ProjectRepository
     prober ports.VideoProber
-    clock  ports.Clock
+    clock  commonports.Clock
 }
 ```
 

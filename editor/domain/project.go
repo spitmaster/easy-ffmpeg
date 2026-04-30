@@ -1,13 +1,16 @@
-// Package domain holds the editor's pure business logic.
-//
-// This package MUST NOT import any other easy-ffmpeg package, nor any
-// third-party library. All I/O (files, network, ffmpeg subprocess) lives
-// outside — domain types and functions are pure and directly unit-testable.
+// Package domain holds the single-video editor's business logic. The
+// pure clip-level primitives (Clip / Split / TrimLeft / planSegments /
+// single-track filter graph builders) live in editor/common/domain;
+// this package re-exports them as type aliases so existing callers and
+// JSON wire-formats stay byte-for-byte identical, and adds the
+// single-video-only Project / Source / Migrate machinery on top.
 package domain
 
 import (
 	"fmt"
 	"time"
+
+	commondomain "easy-ffmpeg/editor/common/domain"
 )
 
 // SchemaVersion is the current on-disk schema version for Project JSON.
@@ -26,6 +29,15 @@ const (
 	TrackAudio = "audio"
 )
 
+// Clip is the shared clip primitive. Aliased here so editor/domain.Clip
+// keeps working at every existing call site (handlers, storage, tests)
+// while the actual definition lives once in editor/common/domain.
+type Clip = commondomain.Clip
+
+// ExportSettings is shared with multitrack and lives in common; aliased
+// here so domain.Project.Export keeps its current JSON shape.
+type ExportSettings = commondomain.ExportSettings
+
 // Project is the single source of truth for one editing session.
 type Project struct {
 	SchemaVersion int            `json:"schemaVersion"`
@@ -39,8 +51,8 @@ type Project struct {
 	// AudioVolume is a linear gain applied to the entire audio track
 	// (0.0 = silent, 1.0 = unity). Drives both preview playback and
 	// export. 0 in JSON means "missing" — Migrate() upgrades it to 1.0.
-	AudioVolume   float64        `json:"audioVolume,omitempty"`
-	Export        ExportSettings `json:"export"`
+	AudioVolume float64        `json:"audioVolume,omitempty"`
+	Export      ExportSettings `json:"export"`
 
 	// LegacyClips is a v1 field kept for migration only. When the repo
 	// reads a v1 file this slice carries the old data; Migrate() copies
@@ -60,50 +72,11 @@ type Source struct {
 	HasAudio   bool    `json:"hasAudio"`
 }
 
-// Clip is a sub-range of the source positioned on its track at ProgramStart.
-// Clips no longer need to be contiguous — gaps between clips are preserved
-// and render as black video / silent audio on export.
-type Clip struct {
-	ID           string  `json:"id"`
-	SourceStart  float64 `json:"sourceStart"`  // seconds into the source, inclusive
-	SourceEnd    float64 `json:"sourceEnd"`    // seconds into the source, exclusive
-	ProgramStart float64 `json:"programStart"` // seconds on the track timeline
-}
-
-// Duration returns the clip's duration in seconds (on both source and track).
-func (c Clip) Duration() float64 { return c.SourceEnd - c.SourceStart }
-
-// ProgramEnd returns the clip's track end time.
-func (c Clip) ProgramEnd() float64 { return c.ProgramStart + c.Duration() }
-
-// ExportSettings carry the user's export preferences. Persisted alongside
-// the project so next export starts with the same choices.
-type ExportSettings struct {
-	Format     string `json:"format"`
-	VideoCodec string `json:"videoCodec"`
-	AudioCodec string `json:"audioCodec"`
-	OutputDir  string `json:"outputDir"`
-	OutputName string `json:"outputName"`
-}
-
-// trackDuration returns the track's program length: the largest ProgramEnd
-// across its clips. A track with a single clip at ProgramStart=5 lasting 10s
-// is 15s long (not 10s) — the leading gap counts.
-func trackDuration(clips []Clip) float64 {
-	var max float64
-	for _, c := range clips {
-		if e := c.ProgramEnd(); e > max {
-			max = e
-		}
-	}
-	return max
-}
-
 // VideoDuration / AudioDuration give the program length of each track in
 // isolation. They can diverge after independent edits — ffmpeg pads or
 // truncates at export according to ffmpeg's own rules.
-func (p *Project) VideoDuration() float64 { return trackDuration(p.VideoClips) }
-func (p *Project) AudioDuration() float64 { return trackDuration(p.AudioClips) }
+func (p *Project) VideoDuration() float64 { return commondomain.TrackDuration(p.VideoClips) }
+func (p *Project) AudioDuration() float64 { return commondomain.TrackDuration(p.AudioClips) }
 
 // ProgramDuration is the length of the composite program: the longer of
 // the two tracks. UI uses this for the timeline ruler and playhead range.
@@ -128,35 +101,8 @@ func (p *Project) Validate() []error {
 	if p.Source.Duration <= 0 {
 		errs = append(errs, fmt.Errorf("source.duration must be > 0"))
 	}
-	errs = append(errs, validateClips(p.VideoClips, "video", p.Source.Duration)...)
-	errs = append(errs, validateClips(p.AudioClips, "audio", p.Source.Duration)...)
-	return errs
-}
-
-func validateClips(clips []Clip, label string, sourceDuration float64) []error {
-	var errs []error
-	seen := map[string]bool{}
-	for i, c := range clips {
-		if c.ID == "" {
-			errs = append(errs, fmt.Errorf("%s[%d]: id is empty", label, i))
-		}
-		if seen[c.ID] {
-			errs = append(errs, fmt.Errorf("%s[%d]: duplicate id %q", label, i, c.ID))
-		}
-		seen[c.ID] = true
-		if c.SourceStart < 0 {
-			errs = append(errs, fmt.Errorf("%s[%d]: sourceStart < 0", label, i))
-		}
-		if c.SourceEnd <= c.SourceStart {
-			errs = append(errs, fmt.Errorf("%s[%d]: sourceEnd must be > sourceStart", label, i))
-		}
-		if sourceDuration > 0 && c.SourceEnd > sourceDuration+1e-6 {
-			errs = append(errs, fmt.Errorf("%s[%d]: sourceEnd > source.duration", label, i))
-		}
-		if c.ProgramStart < 0 {
-			errs = append(errs, fmt.Errorf("%s[%d]: programStart < 0", label, i))
-		}
-	}
+	errs = append(errs, commondomain.ValidateClips(p.VideoClips, "video", p.Source.Duration)...)
+	errs = append(errs, commondomain.ValidateClips(p.AudioClips, "audio", p.Source.Duration)...)
 	return errs
 }
 

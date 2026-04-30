@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	commonports "easy-ffmpeg/editor/common/ports"
 	"easy-ffmpeg/editor/ports"
 )
 
@@ -12,9 +13,9 @@ import (
 type Config struct {
 	Repo   ports.ProjectRepository
 	Prober ports.VideoProber
-	Runner ports.JobRunner
-	Paths  ports.PathResolver
-	Clock  ports.Clock
+	Runner commonports.JobRunner
+	Paths  commonports.PathResolver
+	Clock  commonports.Clock
 }
 
 // Router constructs every handler once and exposes a Register method.
