@@ -1,50 +1,49 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
-import type { ExportSettings } from '@/api/editor'
-import { useDirsStore } from '@/stores/dirs'
-import { useEditorStore } from '@/stores/editor'
-import { useModalsStore } from '@/stores/modals'
+import type { ExportSettings } from '@/types/timeline'
 
-const props = defineProps<{ open: boolean }>()
+/**
+ * Export dialog. Parameterized over the picker callback so single-video
+ * (which uses modals.showPicker) and multitrack (likely the same) can
+ * each plug in their own. Defaults are passed in by the caller — this
+ * component owns no project / store reference.
+ */
+const props = defineProps<{
+  open: boolean
+  /** Initial form values; reset to these whenever `open` flips to true. */
+  defaults: ExportSettings
+  /**
+   * Async directory picker; receives the current value, returns the
+   * picked path or null if cancelled. Caller is responsible for
+   * persisting the picked path in any "last directory" store.
+   */
+  pickDir: (current: string) => Promise<string | null>
+  /** Optional dialog title; default: "导出". */
+  title?: string
+}>()
+
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'submit', settings: ExportSettings): void
 }>()
 
-const store = useEditorStore()
-const dirs = useDirsStore()
-const modals = useModalsStore()
-
-const form = reactive<ExportSettings>({
-  format: 'mp4',
-  videoCodec: 'h264',
-  audioCodec: 'aac',
-  outputDir: '',
-  outputName: '',
-})
+const form = reactive<ExportSettings>({ ...props.defaults })
 
 watch(
   () => props.open,
   (v) => {
     if (!v) return
-    const e = store.project?.export
-    form.format = e?.format || 'mp4'
-    form.videoCodec = e?.videoCodec || 'h264'
-    form.audioCodec = e?.audioCodec || 'aac'
-    form.outputDir = e?.outputDir || dirs.outputDir || ''
-    form.outputName = e?.outputName || store.project?.name || 'edit'
+    form.format = props.defaults.format
+    form.videoCodec = props.defaults.videoCodec
+    form.audioCodec = props.defaults.audioCodec
+    form.outputDir = props.defaults.outputDir
+    form.outputName = props.defaults.outputName
   },
 )
 
-async function pickDir() {
-  const p = await modals.showPicker({
-    mode: 'dir',
-    title: '选择输出目录',
-    startPath: form.outputDir || dirs.outputDir,
-  })
-  if (!p) return
-  form.outputDir = p
-  await dirs.saveOutput(p)
+async function onPickDir() {
+  const p = await props.pickDir(form.outputDir)
+  if (p) form.outputDir = p
 }
 
 function submit() {
@@ -67,7 +66,7 @@ function submit() {
   >
     <div class="w-[480px] rounded border border-border-strong bg-bg-panel">
       <div class="flex items-center justify-between border-b border-border-base px-4 py-2">
-        <h3 class="text-sm font-medium">导出</h3>
+        <h3 class="text-sm font-medium">{{ title ?? '导出' }}</h3>
         <button class="text-fg-muted hover:text-fg-base" @click="emit('close')">×</button>
       </div>
       <div class="flex flex-col gap-3 p-4 text-xs">
@@ -111,7 +110,7 @@ function submit() {
           <div class="flex gap-2">
             <button
               class="rounded border border-border-strong bg-bg-elevated px-3 py-1.5 hover:bg-bg-panel"
-              @click="pickDir"
+              @click="onPickDir"
             >选择</button>
             <input
               v-model.trim="form.outputDir"

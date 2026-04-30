@@ -1,6 +1,8 @@
 import { nextTick, onUnmounted, ref, watch, type Ref } from 'vue'
 import { editorApi, type Project } from '@/api/editor'
 import { useEditorStore } from '@/stores/editor'
+import { useAudioGain } from '@/composables/timeline/useAudioGain'
+import { useGapClock } from '@/composables/timeline/useGapClock'
 import { collectBoundaries, programToSource, totalDuration } from '@/utils/timeline'
 
 /**
@@ -26,17 +28,21 @@ export function useEditorPreview(
   let activeVideoIndex = -1
   let activeAudioIndex = -1
 
-  // Gap clock state
-  let gapClockId: number | null = null
-  let gapAnchorReal = 0
-  let gapAnchorPlayhead = 0
-
-  // WebAudio gain (created lazily on first applyAudioVolume).
-  let audioCtx: AudioContext | null = null
-  let gainNode: GainNode | null = null
-
   // Track whether listeners have been attached so we can be re-init safe.
   const inGap = ref(false)
+
+  // ---- Shared primitives: gap clock + WebAudio gain ----
+
+  const gapClock = useGapClock({
+    shouldContinue: () => store.playing && !!store.project,
+    onTick: gapTick,
+  })
+
+  const audioGain = useAudioGain(audioRef, () => store.project?.audioVolume ?? 1)
+
+  function applyAudioVolume() {
+    audioGain.apply()
+  }
 
   function el<T>(r: Ref<T | null>): T | null {
     return r.value
@@ -63,7 +69,7 @@ export function useEditorPreview(
     if (a && !sameSrc(a, url)) a.src = url
     activeVideoIndex = -1
     activeAudioIndex = -1
-    stopGapClock()
+    gapClock.stop()
     inGap.value = false
     applyAudioVolume()
     seek(0)
@@ -84,10 +90,10 @@ export function useEditorPreview(
     store.playing = true
     store.splitScope = 'both'
     if (activeVideoIndex >= 0) {
-      stopGapClock()
+      gapClock.stop()
       if (v.paused) v.play().catch(() => {})
     } else {
-      startGapClock()
+      gapClock.start(store.playhead)
     }
     if (a && a.paused && activeAudioIndex >= 0) a.play().catch(() => {})
   }
@@ -97,7 +103,7 @@ export function useEditorPreview(
     const a = el(audioRef)
     if (v) v.pause()
     if (a) a.pause()
-    stopGapClock()
+    gapClock.stop()
     store.playing = false
   }
 
@@ -116,11 +122,11 @@ export function useEditorPreview(
     if (store.playing) {
       const v = el(videoRef)
       if (activeVideoIndex >= 0 && v) {
-        stopGapClock()
+        gapClock.stop()
         if (v.paused) v.play().catch(() => {})
       } else {
-        stopGapClock()
-        startGapClock()
+        gapClock.stop()
+        gapClock.start(store.playhead)
       }
     }
   }
@@ -148,33 +154,19 @@ export function useEditorPreview(
     }
   }
 
-  // ---- Gap clock ----
+  // ---- Gap clock tick ----
 
-  function startGapClock() {
-    if (gapClockId !== null) return
-    gapAnchorReal = performance.now()
-    gapAnchorPlayhead = store.playhead
-    gapClockId = requestAnimationFrame(gapTick)
-  }
-
-  function stopGapClock() {
-    if (gapClockId !== null) {
-      cancelAnimationFrame(gapClockId)
-      gapClockId = null
-    }
-  }
-
-  function gapTick() {
-    gapClockId = null
-    if (!store.playing || !store.project) return
+  // Called by useGapClock per rAF. We update the playhead, then either
+  // hand off to the <video> element when we've entered a clip, end the
+  // timeline, or keep ticking through the gap.
+  function gapTick(newPlayhead: number): 'continue' | 'stop' {
+    if (!store.project) return 'stop'
     const v = el(videoRef)
     const total = totalDuration(store.project)
-    const elapsed = (performance.now() - gapAnchorReal) / 1000
-    const newPlayhead = gapAnchorPlayhead + elapsed
     if (newPlayhead >= total - 1e-3) {
       store.playhead = total
       pause()
-      return
+      return 'stop'
     }
     store.playhead = newPlayhead
     const videoClips = store.project.videoClips || []
@@ -185,10 +177,10 @@ export function useEditorPreview(
       if (v.readyState > 0) v.currentTime = pos.src
       if (v.paused) v.play().catch(() => {})
       keepAudioInSync(newPlayhead)
-      return
+      return 'stop'
     }
     keepAudioInSync(newPlayhead)
-    gapClockId = requestAnimationFrame(gapTick)
+    return 'continue'
   }
 
   // ---- Video track ----
@@ -236,7 +228,7 @@ export function useEditorPreview(
       inGap.value = true
       if (!v.paused) v.pause()
       keepAudioInSync(programEnd)
-      if (store.playing) startGapClock()
+      if (store.playing) gapClock.start(store.playhead)
       return
     }
 
@@ -301,51 +293,6 @@ export function useEditorPreview(
     }
   }
 
-  // ---- Volume ----
-
-  function initGainNode() {
-    const a = el(audioRef)
-    if (!a || gainNode) return
-    type AudioCtor = typeof AudioContext
-    const w = window as Window & { webkitAudioContext?: AudioCtor }
-    const Ctor: AudioCtor | undefined = window.AudioContext || w.webkitAudioContext
-    if (!Ctor) return
-    try {
-      audioCtx = new Ctor()
-      const src = audioCtx.createMediaElementSource(a)
-      gainNode = audioCtx.createGain()
-      gainNode.gain.value = 1
-      src.connect(gainNode).connect(audioCtx.destination)
-    } catch (e) {
-      console.warn('[editor] WebAudio gain unavailable; preview volume capped at 100%:', e)
-      audioCtx = null
-      gainNode = null
-    }
-  }
-
-  function applyAudioVolume() {
-    const a = el(audioRef)
-    if (!a) return
-    const p = store.project
-    const v = Math.max(0, p && p.audioVolume != null ? p.audioVolume : 1)
-    if (!gainNode) initGainNode()
-    if (gainNode) {
-      gainNode.gain.value = v
-      a.volume = 1
-      if (audioCtx && audioCtx.state === 'suspended') {
-        audioCtx.resume().catch(() => {})
-      }
-    } else {
-      a.volume = Math.min(1, v)
-    }
-  }
-
-  // Watch volume changes from the store and propagate to gain node.
-  watch(
-    () => store.project?.audioVolume,
-    () => applyAudioVolume(),
-  )
-
   // ---- Listeners (attach on first valid element) ----
 
   function attachListeners() {
@@ -387,7 +334,7 @@ export function useEditorPreview(
     if (store.playhead < total - 0.01) {
       activeVideoIndex = -1
       inGap.value = true
-      startGapClock()
+      gapClock.start(store.playhead)
       return
     }
     store.playing = false
@@ -424,7 +371,7 @@ export function useEditorPreview(
 
   onUnmounted(() => {
     stopWatchAttach()
-    stopGapClock()
+    gapClock.stop()
     detachListeners()
   })
 

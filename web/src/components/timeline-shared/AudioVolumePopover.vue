@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { useEditorStore } from '@/stores/editor'
 
-const store = useEditorStore()
+/**
+ * 0–200% audio volume slider in a teleported popover. Pure presentation —
+ * the parent owns the volume value via v-model.
+ */
+const props = defineProps<{
+  /** Current volume; 0–2.0 typical (200% cap). */
+  modelValue: number
+}>()
+
+const emit = defineEmits<{
+  (e: 'update:modelValue', v: number): void
+}>()
 
 const open = ref(false)
 const btnRef = ref<HTMLButtonElement | null>(null)
 const popoverPos = ref<{ left: number; top: number }>({ left: 0, top: 0 })
 
 const volume = computed({
-  get: () => (store.project?.audioVolume != null ? store.project.audioVolume : 1),
-  set: (v: number) => {
-    if (!store.project) return
-    store.applyProjectPatch({ audioVolume: v })
-  },
+  get: () => props.modelValue,
+  set: (v: number) => emit('update:modelValue', v),
 })
 
 const pct = computed(() => Math.round(volume.value * 100) + '%')
@@ -25,7 +32,6 @@ function toggleOpen() {
 
 function openIt() {
   open.value = true
-  // Defer position calc to next tick once popover is rendered.
   requestAnimationFrame(() => {
     const btn = btnRef.value
     if (!btn) return
@@ -51,8 +57,6 @@ function onOutsideClick(ev: MouseEvent) {
   const target = ev.target as Node | null
   if (!target) return
   if (btnRef.value?.contains(target)) return
-  // The popover itself catches clicks via @mousedown.stop on the slider
-  // wrapper below.
   close()
 }
 

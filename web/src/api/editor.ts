@@ -1,3 +1,4 @@
+import type { Clip as TimelineClip, ExportSettings } from '@/types/timeline'
 import { fetchJson, getJson, postJson, postJsonRaw } from './client'
 
 /**
@@ -21,20 +22,14 @@ export interface Source {
   hasAudio: boolean
 }
 
-export interface Clip {
-  id: string
-  sourceStart: number
-  sourceEnd: number
-  programStart: number
-}
+// Wire shape is identical to the shared timeline Clip (mirrors
+// editor/common/domain/Clip on the Go side). Re-export so existing call
+// sites that import { Clip } from '@/api/editor' keep working.
+export type Clip = TimelineClip
 
-export interface ExportSettings {
-  format: string
-  videoCodec: string
-  audioCodec: string
-  outputDir: string
-  outputName: string
-}
+// Wire shape for ExportSettings is identical to the shared shape; re-export
+// so existing call sites keep working.
+export type { ExportSettings }
 
 export interface Project {
   schemaVersion: number

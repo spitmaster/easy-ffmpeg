@@ -1,33 +1,52 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, useTemplateRef, watch } from 'vue'
-import { editorApi, type ExportSettings, type Project } from '@/api/editor'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, toRef, useTemplateRef, watch } from 'vue'
+import {
+  editorApi,
+  TRACK_AUDIO,
+  TRACK_VIDEO,
+  type Project,
+  type Track,
+} from '@/api/editor'
+import type { ExportSettings, ProjectsModalItem, RangeSelection, TrackData } from '@/types/timeline'
 import { useDirsStore } from '@/stores/dirs'
-import { useEditorStore } from '@/stores/editor'
+import { useEditorStore, Sel } from '@/stores/editor'
 import { useModalsStore } from '@/stores/modals'
 import { useEditorOps } from '@/composables/useEditorOps'
 import { useEditorPreview } from '@/composables/useEditorPreview'
 import { useJobPanel } from '@/composables/useJobPanel'
+import { useTimelineDrag } from '@/composables/timeline/useTimelineDrag'
+import { useTimelinePlayback } from '@/composables/timeline/useTimelinePlayback'
+import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeSelect'
+import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
 import { totalDuration } from '@/utils/timeline'
 import { Path } from '@/utils/path'
 import EditorTopBar from '@/components/editor/EditorTopBar.vue'
-import EditorPlayBar from '@/components/editor/EditorPlayBar.vue'
-import EditorTimeline from '@/components/editor/EditorTimeline.vue'
 import EditorToolbar from '@/components/editor/EditorToolbar.vue'
-import EditorAudioVolume from '@/components/editor/EditorAudioVolume.vue'
-import EditorProjectsModal from '@/components/editor/EditorProjectsModal.vue'
-import EditorExportDialog from '@/components/editor/EditorExportDialog.vue'
-import EditorExportSidebar from '@/components/editor/EditorExportSidebar.vue'
+import AudioVolumePopover from '@/components/timeline-shared/AudioVolumePopover.vue'
+import ExportDialog from '@/components/timeline-shared/ExportDialog.vue'
+import ExportSidebar from '@/components/timeline-shared/ExportSidebar.vue'
+import PlayBar from '@/components/timeline-shared/PlayBar.vue'
+import ProjectsModal from '@/components/timeline-shared/ProjectsModal.vue'
+import TimelinePlayhead from '@/components/timeline-shared/TimelinePlayhead.vue'
+import TimelineRangeSelection from '@/components/timeline-shared/TimelineRangeSelection.vue'
+import TimelineRuler from '@/components/timeline-shared/TimelineRuler.vue'
+import TimelineTrackRow from '@/components/timeline-shared/TimelineTrackRow.vue'
 
 const store = useEditorStore()
 const dirs = useDirsStore()
 const modals = useModalsStore()
 const ops = useEditorOps()
 
+// ---- Refs to mounted DOM ----
+
 const videoRef = ref<HTMLVideoElement | null>(null)
 const audioRef = ref<HTMLAudioElement | null>(null)
-const timelineRef = useTemplateRef<{ applyFit(): void }>('timelineRef')
+const scrollEl = useTemplateRef<HTMLDivElement>('scrollEl')
+const rulerCmp = useTemplateRef<{ rootEl: { value: HTMLDivElement | null } }>('rulerCmp')
 
 const preview = useEditorPreview(videoRef, audioRef)
+
+// ---- Project / panels ----
 
 const projectsOpen = ref(false)
 const exportOpen = ref(false)
@@ -42,6 +61,170 @@ const job = useJobPanel({
 })
 
 const hasProject = computed(() => !!store.project)
+
+// ---- Timeline computed ----
+
+const total = computed(() => totalDuration(store.project))
+const trackWidth = computed(() => Math.max(total.value * store.pxPerSecond + 40, 400))
+const playheadX = computed(() => store.playhead * store.pxPerSecond)
+
+const videoTrack = computed<TrackData>(() => ({
+  id: TRACK_VIDEO,
+  kind: 'video',
+  clips: store.project?.videoClips || [],
+  tone: 'accent',
+}))
+const audioTrack = computed<TrackData>(() => ({
+  id: TRACK_AUDIO,
+  kind: 'audio',
+  clips: store.project?.audioClips || [],
+  tone: 'success',
+}))
+const selectedVideoIds = computed(() => Sel.inTrack(store.selection, TRACK_VIDEO))
+const selectedAudioIds = computed(() => Sel.inTrack(store.selection, TRACK_AUDIO))
+
+const audioVolume = computed({
+  get: () => store.project?.audioVolume ?? 1,
+  set: (v: number) => {
+    if (!store.project) return
+    store.applyProjectPatch({ audioVolume: v })
+  },
+})
+
+// ---- Timeline composables ----
+
+const zoom = useTimelineZoom({
+  pxPerSecond: toRef(store, 'pxPerSecond'),
+  totalSec: () => total.value,
+  scrollEl,
+})
+
+const drag = useTimelineDrag({
+  pxPerSecond: () => store.pxPerSecond,
+  playhead: () => store.playhead,
+  getClips: (trackId) =>
+    trackId === TRACK_VIDEO
+      ? store.project?.videoClips ?? []
+      : store.project?.audioClips ?? [],
+  setClips: (trackId, clips) => {
+    const key = trackId === TRACK_VIDEO ? 'videoClips' : 'audioClips'
+    store.applyProjectPatch({ [key]: clips }, { save: false })
+  },
+  pushHistory: () => store.pushHistory(),
+  scheduleSave: () => store.scheduleSave(),
+  // Single-video has one source — both video and audio clips trim against
+  // the same source duration.
+  sourceMaxFor: () => store.project?.source?.duration ?? 0,
+})
+
+// rulerEl is a computed unwrap of the TimelineRuler component's exposed
+// rootEl ref, fed to useTimelineRangeSelect for client-x → seconds math.
+const rulerEl = computed(() => rulerCmp.value?.rootEl?.value ?? null)
+const rangeSelect = useTimelineRangeSelect({
+  rulerEl,
+  pxPerSecond: () => store.pxPerSecond,
+  totalSec: () => total.value,
+  setRange: (r: RangeSelection | null) => {
+    store.rangeSelection = r
+  },
+  onStart: () => {
+    store.selection = []
+    store.splitScope = 'both'
+  },
+})
+
+const playback = useTimelinePlayback({
+  isLocked: () => job.running.value,
+  togglePlay: () => preview.toggle(),
+  splitAtPlayhead: () => ops.splitAtPlayhead(),
+  deleteSelection: () => ops.deleteSelection(),
+  seekBackBoundary: () => preview.seekToBoundary(-1),
+  seekForwardBoundary: () => preview.seekToBoundary(1),
+  undo: () => store.undo(),
+  redo: () => store.redo(),
+  clearRangeSelection: () => {
+    if (store.rangeSelection) store.rangeSelection = null
+  },
+})
+
+// ---- Timeline mouse handlers (assemble shared composables) ----
+
+function clientXToTime(clientX: number, clamp = true): number {
+  const r = rulerEl.value
+  if (!r) return 0
+  const rect = r.getBoundingClientRect()
+  const x = clientX - rect.left
+  const t = x / store.pxPerSecond
+  if (!clamp) return t
+  return Math.max(0, Math.min(total.value, t))
+}
+
+function startScrubDrag(ev: MouseEvent) {
+  ev.preventDefault()
+  const wasPlaying = store.playing
+  if (wasPlaying) preview.pause()
+  preview.seek(clientXToTime(ev.clientX))
+  function onMove(e: MouseEvent) {
+    preview.seek(clientXToTime(e.clientX))
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    if (wasPlaying) preview.play()
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+function onRulerMouseDown(ev: MouseEvent) {
+  if (ev.button === 2) {
+    rangeSelect.start(ev)
+    return
+  }
+  store.splitScope = 'both'
+  store.selection = []
+  store.rangeSelection = null
+  startScrubDrag(ev)
+}
+
+function onPlayheadMouseDown(ev: MouseEvent) {
+  if (ev.button !== 0) return
+  ev.stopPropagation()
+  if (store.rangeSelection) store.rangeSelection = null
+  startScrubDrag(ev)
+}
+
+function onTrackMouseDown(
+  trackId: Track,
+  payload: { ev: MouseEvent; clipId?: string; handle?: 'left' | 'right' },
+) {
+  const { ev, clipId, handle } = payload
+  if (ev.button !== 0) return
+  if (store.rangeSelection) store.rangeSelection = null
+
+  if (!clipId) {
+    // Empty area → narrow split scope to this track + scrub.
+    store.splitScope = trackId
+    store.selection = []
+    startScrubDrag(ev)
+    return
+  }
+  const multi = ev.shiftKey || ev.ctrlKey || ev.metaKey
+  store.selection = multi
+    ? Sel.toggle(store.selection, trackId, clipId)
+    : Sel.replace(trackId, clipId)
+  store.splitScope = trackId
+  if (handle) {
+    drag.startTrim(ev, trackId, clipId, handle)
+  } else if (!multi) {
+    drag.startReorder(ev, trackId, clipId)
+  }
+}
+
+// Suppress browser context menu — right-click is repurposed for range select.
+function onContextMenu(ev: MouseEvent) {
+  ev.preventDefault()
+}
 
 // ---- Project lifecycle ----
 
@@ -73,10 +256,48 @@ function loadProject(project: Project) {
   preview.loadProject(project)
   // Fit-to-width must run after the workspace is visible so clientWidth
   // reads correctly.
-  requestAnimationFrame(() => timelineRef.value?.applyFit())
+  requestAnimationFrame(() => zoom.applyFit())
+}
+
+// ---- Projects modal adapter ----
+
+async function listProjects(): Promise<ProjectsModalItem[]> {
+  const ps = (await editorApi.listProjects()) || []
+  return ps.map((p) => ({
+    id: p.id,
+    name: p.name,
+    updatedAt: p.updatedAt,
+    detail: p.source?.path,
+  }))
+}
+
+async function deleteProject(id: string) {
+  await editorApi.deleteProject(id)
 }
 
 // ---- Export ----
+
+const exportDefaults = computed<ExportSettings>(() => {
+  const e = store.project?.export
+  return {
+    format: e?.format || 'mp4',
+    videoCodec: e?.videoCodec || 'h264',
+    audioCodec: e?.audioCodec || 'aac',
+    outputDir: e?.outputDir || dirs.outputDir || '',
+    outputName: e?.outputName || store.project?.name || 'edit',
+  }
+})
+
+async function pickOutputDir(current: string): Promise<string | null> {
+  const p = await modals.showPicker({
+    mode: 'dir',
+    title: '选择输出目录',
+    startPath: current || dirs.outputDir,
+  })
+  if (!p) return null
+  await dirs.saveOutput(p)
+  return p
+}
 
 async function onExportSubmit(settings: ExportSettings) {
   const project = store.project
@@ -98,7 +319,6 @@ async function onExportSubmit(settings: ExportSettings) {
   await store.flushSave()
   const body = { projectId: project.id, export: settings }
 
-  // Local name avoids shadowing the `preview` composable above.
   let dryRun: { command: string; outputPath: string }
   try {
     dryRun = await editorApi.exportPreview(body)
@@ -128,7 +348,8 @@ async function onExportSubmit(settings: ExportSettings) {
   }
 
   await job.startJob({
-    outputPath: dryRun.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
+    outputPath:
+      dryRun.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
     totalDurationSec: totalDuration(project),
     request: () => sendStart(false),
   })
@@ -137,87 +358,36 @@ async function onExportSubmit(settings: ExportSettings) {
 async function closeExportSidebar() {
   if (job.running.value) {
     if (!confirm('导出仍在进行中，关闭面板将取消导出。确认关闭？')) return
-    try { await editorApi.cancelExport() } catch { /* server may already be tearing down */ }
+    try {
+      await editorApi.cancelExport()
+    } catch {
+      // server may already be tearing down
+    }
   }
   exportSidebarOpen.value = false
 }
 
-// ---- Keyboard shortcuts ----
-
-function isEditableFocus(): boolean {
-  const a = document.activeElement
-  if (!a) return false
-  const tag = a.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (a as HTMLElement).isContentEditable
-}
-
-function onKeyDown(e: KeyboardEvent) {
-  if (isEditableFocus()) return
-  // Editing is locked while an export is running (matches the visual
-  // overlay covering the workspace). Without this, hitting Space here
-  // would try to resume the just-paused preview against the file ffmpeg
-  // is currently encoding.
-  if (job.running.value) return
-  switch (e.key) {
-    case ' ':
-      e.preventDefault()
-      preview.toggle()
-      break
-    case 's':
-    case 'S':
-      ops.splitAtPlayhead()
-      break
-    case 'Delete':
-    case 'Backspace':
-      ops.deleteSelection()
-      break
-    case 'ArrowLeft':
-      preview.seekToBoundary(-1)
-      break
-    case 'ArrowRight':
-      preview.seekToBoundary(1)
-      break
-    case 'z':
-    case 'Z':
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault()
-        if (e.shiftKey) store.redo()
-        else store.undo()
-      }
-      break
-    case 'y':
-    case 'Y':
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault()
-        store.redo()
-      }
-      break
-    case 'Escape':
-      if (store.rangeSelection) store.rangeSelection = null
-      break
-  }
-}
+// ---- Lifecycle ----
 
 // Use activated/deactivated rather than mounted/beforeUnmount: with
 // KeepAlive in App.vue this view stays mounted across tab switches, but
 // the document-level shortcuts (Space, S, Delete, Ctrl+Z, …) must only
 // fire while the editor is the visible tab — otherwise hitting Space
 // in Convert/Audio would toggle preview playback in the background.
-onActivated(() => document.addEventListener('keydown', onKeyDown))
-onDeactivated(() => document.removeEventListener('keydown', onKeyDown))
+onActivated(() => playback.attach())
+onDeactivated(() => playback.detach())
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeyDown)
+  playback.detach()
   // Best-effort flush: don't await to keep navigation snappy.
   store.flushSave().catch(() => {})
 })
 
-// Re-fit on project switch (covers loadProjectById flow that already calls
-// applyFit, plus any future entry points).
+// Re-fit on project switch.
 watch(
   () => store.project?.id,
   () => {
     if (!store.project) return
-    requestAnimationFrame(() => timelineRef.value?.applyFit())
+    requestAnimationFrame(() => zoom.applyFit())
   },
 )
 </script>
@@ -258,28 +428,95 @@ watch(
             <audio ref="audioRef" preload="auto" style="display: none"></audio>
           </div>
 
-          <EditorPlayBar
+          <PlayBar
+            :playhead="store.playhead"
+            :total-sec="total"
+            :playing="store.playing"
             @prev="preview.seekToBoundary(-1)"
             @next="preview.seekToBoundary(1)"
             @toggle="preview.toggle()"
           />
 
-          <EditorTimeline
-            ref="timelineRef"
-            @seek="(t: number) => preview.seek(t)"
-            @pause-during-scrub="preview.pause()"
-            @resume-after-scrub="preview.play()"
+          <!-- Timeline (was EditorTimeline.vue; now composed inline from
+               timeline-shared/* atoms so the multitrack view can compose
+               the same atoms with N tracks). -->
+          <div
+            class="relative flex h-48 shrink-0 overflow-hidden border-t border-border-base bg-bg-base"
+            @contextmenu="onContextMenu"
           >
-            <template #audio-label>
-              <!-- Stack the label and the volume control vertically — the
-                   left column is narrow (~96px) and "🔊 音频" + "音量: 100%"
-                   on one line wraps. -->
-              <span class="flex w-full flex-col items-start gap-1">
-                <span class="whitespace-nowrap">🔊 音频</span>
-                <EditorAudioVolume />
-              </span>
-            </template>
-          </EditorTimeline>
+            <!-- Left: track labels. Each row's height matches the right-hand
+                 ruler / track heights so the labels stay aligned. -->
+            <div class="flex w-24 shrink-0 flex-col border-r border-border-base bg-bg-panel text-xs">
+              <div class="h-7 shrink-0 border-b border-border-base"></div>
+              <div class="flex h-12 shrink-0 items-center px-2">🎬 视频</div>
+              <!-- Audio row is taller — we stack the label + volume button
+                   vertically, h-12 was too tight. -->
+              <div class="flex h-14 shrink-0 items-center border-t border-border-base px-2 py-1">
+                <span class="flex w-full flex-col items-start gap-1">
+                  <span class="whitespace-nowrap">🔊 音频</span>
+                  <AudioVolumePopover v-model="audioVolume" />
+                </span>
+              </div>
+            </div>
+
+            <!-- Right: scrolling area -->
+            <div
+              ref="scrollEl"
+              class="relative flex-1 overflow-x-auto overflow-y-hidden"
+              @wheel="zoom.onWheel"
+            >
+              <TimelineRuler
+                ref="rulerCmp"
+                :px-per-second="store.pxPerSecond"
+                :total-sec="total"
+                :track-width="trackWidth"
+                @mousedown="onRulerMouseDown"
+              />
+
+              <TimelineTrackRow
+                :track="videoTrack"
+                :px-per-second="store.pxPerSecond"
+                :track-width="trackWidth"
+                :selected-ids="selectedVideoIds"
+                height-class="h-12"
+                @mousedown="(payload) => onTrackMouseDown(TRACK_VIDEO, payload)"
+              />
+
+              <TimelineTrackRow
+                :track="audioTrack"
+                :px-per-second="store.pxPerSecond"
+                :track-width="trackWidth"
+                :selected-ids="selectedAudioIds"
+                height-class="h-14"
+                @mousedown="(payload) => onTrackMouseDown(TRACK_AUDIO, payload)"
+              />
+
+              <TimelineRangeSelection
+                :range="store.rangeSelection"
+                :px-per-second="store.pxPerSecond"
+              />
+
+              <TimelinePlayhead
+                v-show="store.project && store.splitScope === 'both'"
+                :x="playheadX"
+                @mousedown="onPlayheadMouseDown"
+              />
+              <TimelinePlayhead
+                v-show="store.project && store.splitScope === TRACK_VIDEO"
+                :x="playheadX"
+                top="28px"
+                height="48px"
+                @mousedown="onPlayheadMouseDown"
+              />
+              <TimelinePlayhead
+                v-show="store.project && store.splitScope === TRACK_AUDIO"
+                :x="playheadX"
+                top="76px"
+                height="56px"
+                @mousedown="onPlayheadMouseDown"
+              />
+            </div>
+          </div>
 
           <EditorToolbar />
         </div>
@@ -303,7 +540,7 @@ watch(
       </div>
 
       <!-- Right: export log sidebar (visible only during/after export) -->
-      <EditorExportSidebar
+      <ExportSidebar
         :open="exportSidebarOpen"
         :running="job.running.value"
         :state-label="job.stateLabel.value"
@@ -320,14 +557,20 @@ watch(
       />
     </div>
 
-    <EditorProjectsModal
+    <ProjectsModal
       :open="projectsOpen"
+      title="剪辑记录"
+      empty-text="暂无剪辑工程"
+      :list="listProjects"
+      :remove="deleteProject"
       @close="projectsOpen = false"
       @load="loadProjectById"
     />
 
-    <EditorExportDialog
+    <ExportDialog
       :open="exportOpen"
+      :defaults="exportDefaults"
+      :pick-dir="pickOutputDir"
       @close="exportOpen = false"
       @submit="onExportSubmit"
     />
