@@ -12,7 +12,7 @@ docs/
 ├── milestones/                每个 active 分支一份独立文件
 │   ├── multitrack.md            (例)分支 multitrack 的里程碑日志
 │   └── archive/               完成的功能 git mv 至此
-│       └── v0.5.1.md            (例)Vue 化迁移历史
+│       └── v0.5.0.md            (例)Vue 化迁移历史
 ├── todo/                      每个 active 分支的当前 M 待办清单
 │   └── README.md              说明 + 模板;具体文件按需创建/删除
 ├── core/                      共享层(后端、前端、构建、桌面版)
@@ -39,7 +39,7 @@ docs/todo/<branch_name with "/" → "_">.md
 |------|------------|------|
 | `multitrack` | `milestones/multitrack.md` | `todo/multitrack.md` |
 | `feature-5.3.2/zhouyijin/eating-fish` | `milestones/feature-5.3.2_zhouyijin_eating-fish.md` | `todo/feature-5.3.2_zhouyijin_eating-fish.md` |
-| `v0.5.1` | `milestones/archive/v0.5.1.md`(已归档) | _(已归档无 todo)_ |
+| `v0.5.0` | `milestones/archive/v0.5.0.md`(已归档) | _(已归档无 todo)_ |
 
 **接手 session 第一件事**:`git branch --show-current` → 推导文件 → 直接打开;不存在就主动问用户。
 

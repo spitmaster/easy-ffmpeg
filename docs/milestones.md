@@ -22,7 +22,7 @@
 
 | Feature | 分支 | 完成日期 | 详情 |
 |---------|------|---------|------|
-| 前端 Vue 化迁移(v0.5.x) | `v0.5.1` | 2026-04-30 | [milestones/archive/v0.5.1.md](milestones/archive/v0.5.1.md) |
+| 前端 Vue 化迁移(v0.5.x) | `v0.5.0` | 2026-04-30 | [milestones/archive/v0.5.0.md](milestones/archive/v0.5.0.md) |
 
 ---
 
