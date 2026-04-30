@@ -69,7 +69,7 @@ cd web && npm run build        # 前端类型检查 + 构建
 - [docs/README.md](docs/README.md) — 设计文档总入口
 - [docs/roadmap.md](docs/roadmap.md) — 粗粒度产品路线图
 - [docs/milestones.md](docs/milestones.md) — 进行中功能的里程碑日志
-- [docs/todo.md](docs/todo.md) — 当前 M 的待办清单
+- [docs/todo/](docs/todo/) — 当前 M 的待办清单(per-branch,文件名 = `<branch with / → _>.md`)
 - [CLAUDE.md](CLAUDE.md) — 给 AI 协作者的工作约定
 - [docs/core/architecture.md](docs/core/architecture.md) — 后端分层
 - [docs/core/frontend.md](docs/core/frontend.md) — 前端架构

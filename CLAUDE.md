@@ -1,25 +1,55 @@
 # CLAUDE.md
 
 > 给未来的 Claude:**先读 [docs/](docs/) 再动手**。本仓库的设计文档是真相源(canonical),代码注释和顶层 `README.md` 可能滞后。
+>
+> 本项目遵循 `~/.claude/CLAUDE.md` v1.1 的文档规范(三档规划体系 + 晋升规则 + 归档策略 + 多人协作 + 分支发现协议)。规则与项目实践冲突时优先信本文件,然后告知用户哪条规则需要升级。
 
-## 第零步:看当前进度
+## 第零步:发现当前工作上下文(分支驱动)
 
-[docs/](docs/) 顶层有三份**规划文档**(粒度从粗到细),每个 session 接手前都该按顺序扫一遍:
+**Milestone / todo 文件路径从分支名机械推导,不需要猜**:
 
-1. [docs/roadmap.md](docs/roadmap.md) — **粗粒度,功能级**。回答"接下来要做哪些功能",月级更新
-2. [docs/milestones.md](docs/milestones.md) — **中粒度,单功能里程碑**。回答"当前在做哪个功能、到第几个 M",周级更新
-3. [docs/todo.md](docs/todo.md) — **细粒度,当前那一个 M 的具体动作**。日级更新,M 完结时整段清空
+```text
+docs/milestones/<branch_name with "/" → "_">.md
+docs/todo/<branch_name with "/" → "_">.md
+```
 
-**晋升规则**(三档之间内容如何流转):
+| 分支 | milestones 文件 | todo 文件 |
+|------|-----------------|-----------|
+| `multitrack` | `docs/milestones/multitrack.md` | `docs/todo/multitrack.md` |
+| `feature/foo/bar` | `docs/milestones/feature_foo_bar.md` | `docs/todo/feature_foo_bar.md` |
+| `v0.5.1` | `docs/milestones/v0.5.1.md`(可能在 archive/) | `docs/todo/v0.5.1.md` |
+
+**接手序列**:
+
+1. `git branch --show-current` → 拿当前分支名
+2. 推导 `docs/milestones/<derived>.md` → 打开,看到当前 milestone 上下文
+3. 推导 `docs/todo/<derived>.md` → 打开,看到具体待办
+4. 任一文件不存在 → **主动问用户**:"当前分支没有对应文件,是要新建,还是这是探索性工作?"
+5. 分支是 `main` / `develop` / `hotfix-*` 等非 feature 分支 → 不进 milestone 上下文,问用户做什么
+
+如果只想看大方向(不进具体工作),读:
+
+1. [docs/roadmap.md](docs/roadmap.md) — 粗粒度,功能级
+2. [docs/milestones.md](docs/milestones.md) — 主索引(进行中 + 已归档)
+
+## 三档规划文档体系
+
+| 文档 | 粒度 | 回答的问题 | 更新频率 |
+|------|------|-----------|---------|
+| [docs/roadmap.md](docs/roadmap.md) | **粗** — 功能级 | 接下来要做哪些功能?边界在哪? | 月级 |
+| [docs/milestones.md](docs/milestones.md) + `docs/milestones/` | **中** — 单功能里程碑 | 当前在做哪个功能?到第几个 M? | 周级 |
+| `docs/todo/<branch>.md` | **细** — 当前 M 的具体动作 | 这个 M 还差哪几步? | 日级 |
+
+**晋升触发条件**:
 
 | 触发 | 动作 |
 |------|------|
-| 某功能正式启动开发 | `roadmap.md` 那行标"⏳ 进行中,见 milestones.md";`milestones.md` 创建该功能的里程碑表(M1, M2, …) |
-| 开始一个具体 M | 把那个 M 的交付内容拆成可勾选清单,**整段填入** `todo.md`;同时 `milestones.md` 那行从 ⏳ 改 🚧 |
-| M 完结 | `milestones.md` 那行标 ✅ + commit + 日期;`todo.md` **整段清空**(只留模板注释) |
-| 整个功能完结 | `milestones.md` 该功能整段移到"已归档";`roadmap.md` 在"已发布版本"加一行 |
+| 某功能正式启动开发 | `roadmap.md` 那行标"⏳ 进行中";`milestones.md` 索引加一行;创建对应分支 + `docs/milestones/<branch>.md` |
+| 开始一个具体 M | 把那个 M 的交付拆成可勾选清单,**整段填入** `docs/todo/<branch>.md`;`docs/milestones/<branch>.md` 那行从 ⏳ 改 🚧 |
+| M 完结 | `docs/milestones/<branch>.md` 那行标 ✅ + commit + 日期;`docs/todo/<branch>.md` 整段清空 |
+| 整个功能完结 | **`git mv`** `docs/milestones/<branch>.md` 到 `docs/milestones/archive/`;主索引中"进行中"挪到"已归档";`docs/todo/<branch>.md` 删除;`roadmap.md` 在"已发布版本"加一行 |
 
-不读这三份就接手,大概率会重复别人已经做完的工作或破坏已有约定。
+详细规则见 [docs/README.md](docs/README.md) "三档规划文档" 一节,或 `~/.claude/CLAUDE.md` v1.1 §2-§5。
 
 ## 第一步:读设计文档
 

@@ -5,8 +5,8 @@
 > 与本目录其他规划文档的分工:
 >
 > - 本文(`roadmap.md`):粗粒度,**功能级**,月级更新。某个功能正式启动开发时在此标"⏳ 进行中,见 milestones.md"
-> - [milestones.md](milestones.md):中粒度,**单功能开发的里程碑**(M1, M2, …),周级更新
-> - [todo.md](todo.md):细粒度,**当前正在做的那一个 M 的具体动作清单**,日级更新,M 完结时清空
+> - [milestones.md](milestones.md) + `milestones/<branch>.md`:中粒度,**单功能开发的里程碑**(M1, M2, …),周级更新
+> - `todo/<branch>.md`:细粒度,**当前正在做的那一个 M 的具体动作清单**,日级更新,M 完结时清空(分支文件名机械推导,见 [README.md](README.md) "分支驱动的发现协议")
 >
 > 晋升规则与三档分工详见 [README.md](README.md)。
 
