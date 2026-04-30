@@ -17,13 +17,13 @@
 - **桌面版**(v0.4.0+):Wails v2,与 Web 版共享同一份后端字节
 - **嵌入 FFmpeg**:[internal/embedded/](internal/embedded/) 按平台 7z 分片,首次启动解压
 
-详见 [design/](design/)。
+详见 [docs/](docs/)。
 
 ## 环境要求
 
 - Go ≥ 1.21
 - Node.js ≥ 20 LTS(用来构建 Vue 前端)
-- 桌面版另需:Wails CLI + 平台 C 工具链(详见 [design/core/build.md §8](design/core/build.md))
+- 桌面版另需:Wails CLI + 平台 C 工具链(详见 [docs/core/build.md §8](docs/core/build.md))
 
 ## 编译
 
@@ -43,7 +43,7 @@ build.bat
 
 ### 准备 FFmpeg 二进制
 
-每个平台需要一份 7z 压缩包放到 `internal/embedded/<os>/<os>.7z`。打包方法见 [design/core/build.md §3](design/core/build.md)。
+每个平台需要一份 7z 压缩包放到 `internal/embedded/<os>/<os>.7z`。打包方法见 [docs/core/build.md §3](docs/core/build.md)。
 
 ## 开发
 
@@ -66,13 +66,15 @@ cd web && npm run build        # 前端类型检查 + 构建
 
 ## 文档
 
-- [design/README.md](design/README.md) — 设计文档总入口
-- [design/milestones.md](design/milestones.md) — 进行中迁移项目的进度日志
+- [docs/README.md](docs/README.md) — 设计文档总入口
+- [docs/roadmap.md](docs/roadmap.md) — 粗粒度产品路线图
+- [docs/milestones.md](docs/milestones.md) — 进行中功能的里程碑日志
+- [docs/todo.md](docs/todo.md) — 当前 M 的待办清单
 - [CLAUDE.md](CLAUDE.md) — 给 AI 协作者的工作约定
-- [design/core/architecture.md](design/core/architecture.md) — 后端分层
-- [design/core/frontend.md](design/core/frontend.md) — 前端架构
-- [design/core/build.md](design/core/build.md) — 构建脚本详解
-- [design/core/desktop.md](design/core/desktop.md) — 桌面版双产物拓扑
+- [docs/core/architecture.md](docs/core/architecture.md) — 后端分层
+- [docs/core/frontend.md](docs/core/frontend.md) — 前端架构
+- [docs/core/build.md](docs/core/build.md) — 构建脚本详解
+- [docs/core/desktop.md](docs/core/desktop.md) — 桌面版双产物拓扑
 
 ## 许可证
 

@@ -118,7 +118,7 @@ easy-ffmpeg/
 ├── tools/                            构建工具(图标、ffmpeg 下载)
 ├── assets/                           品牌图标源文件
 ├── build.bat / build.sh              一键四平台构建 + 桌面版分支
-├── design/                           设计文档(本目录)
+├── docs/                             设计文档(本目录)
 └── dist/                             构建产物
 ```
 
