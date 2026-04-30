@@ -12,7 +12,7 @@
 
 | Feature | 分支 | 状态 | 详情 |
 |---------|------|------|------|
-| 多轨剪辑器(类 Premiere Pro) | `multitrack`(待创建) | ⏳ Phase A M1 待启动 | [milestones/multitrack.md](milestones/multitrack.md) |
+| 多轨剪辑器(类 Premiere Pro) | `feature-v0.5.0/multitrack-editor` | 🚧 M1+M2 完成,M3 待启动 | [milestones/feature-v0.5.0_multitrack-editor.md](milestones/feature-v0.5.0_multitrack-editor.md) |
 
 ---
 

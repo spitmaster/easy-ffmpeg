@@ -20,7 +20,9 @@
 
 > 这里只列出对应"进行中"分支的待办文件;归档的 feature 不留 todo。
 
-_(目前没有 active 待办文件——多轨剪辑器分支尚未创建)_
+| 分支 | 待办文件 | 当前 M |
+|------|---------|--------|
+| `feature-v0.5.0/multitrack-editor` | [feature-v0.5.0_multitrack-editor.md](feature-v0.5.0_multitrack-editor.md) | M3 后端共享层抽取 |
 
 ## 模板
 

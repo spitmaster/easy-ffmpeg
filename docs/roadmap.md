@@ -17,7 +17,7 @@
 | 项 | 值 |
 |---|---|
 | 当前版本 | **v0.5.1** |
-| 进行中 | **多轨剪辑器**(类 Premiere Pro 的多源/多轨/叠加剪辑,新 Tab),Phase A M1 待启动。详见 [milestones.md](milestones.md) |
+| 进行中 | **多轨剪辑器**(类 Premiere Pro 的多源/多轨/叠加剪辑,新 Tab),M1 PRD ✅ + M2 技术设计 ✅,M3 后端共享层抽取待启动。分支 `feature-v0.5.0/multitrack-editor`。详见 [milestones.md](milestones.md) |
 
 ---
 

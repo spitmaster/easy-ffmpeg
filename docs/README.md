@@ -10,7 +10,7 @@ docs/
 ├── roadmap.md                 ★ 粗粒度产品路线图(月级,功能级)
 ├── milestones.md              ★ 主索引(进行中 + 已归档)
 ├── milestones/                每个 active 分支一份独立文件
-│   ├── multitrack.md            (例)分支 multitrack 的里程碑日志
+│   ├── feature-v0.5.0_multitrack-editor.md  (当前)分支 feature-v0.5.0/multitrack-editor 的里程碑日志
 │   └── archive/               完成的功能 git mv 至此
 │       └── v0.5.0.md            (例)Vue 化迁移历史
 ├── todo/                      每个 active 分支的当前 M 待办清单
@@ -37,7 +37,7 @@ docs/todo/<branch_name with "/" → "_">.md
 
 | 分支 | milestones | todo |
 |------|------------|------|
-| `multitrack` | `milestones/multitrack.md` | `todo/multitrack.md` |
+| `feature-v0.5.0/multitrack-editor` | `milestones/feature-v0.5.0_multitrack-editor.md` | `todo/feature-v0.5.0_multitrack-editor.md` |
 | `feature-5.3.2/zhouyijin/eating-fish` | `milestones/feature-5.3.2_zhouyijin_eating-fish.md` | `todo/feature-5.3.2_zhouyijin_eating-fish.md` |
 | `v0.5.0` | `milestones/archive/v0.5.0.md`(已归档) | _(已归档无 todo)_ |
 
@@ -84,7 +84,7 @@ docs/todo/<branch_name with "/" → "_">.md
 | 视频转换 | ✅ | [tabs/convert/product.md](tabs/convert/product.md) | [tabs/convert/program.md](tabs/convert/program.md) |
 | 音频处理(三模式) | ✅ | [tabs/audio/product.md](tabs/audio/product.md) | [tabs/audio/program.md](tabs/audio/program.md) |
 | 单视频剪辑器 | ✅ | [tabs/editor/product.md](tabs/editor/product.md) | [tabs/editor/program.md](tabs/editor/program.md) |
-| 多轨剪辑器 | 🚧 规划中(M1) | — | — |
+| 多轨剪辑器 | 🚧 PRD/技术设计完成,M3 待启动 | [tabs/multitrack/product.md](tabs/multitrack/product.md) | [tabs/multitrack/program.md](tabs/multitrack/program.md) |
 | 媒体信息 | 🚧 占位 | — | — |
 | 设置 | 🚧 占位 | — | — |
 
