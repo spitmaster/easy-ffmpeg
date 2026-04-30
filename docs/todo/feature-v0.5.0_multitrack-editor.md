@@ -22,68 +22,68 @@
 
 #### A.1 `multitrack/domain/`
 
-- [ ] `clip.go`(新文件):新建 multitrack 专属 `Clip` struct,**嵌入** `common.Clip` 并加 `SourceID` 字段(JSON tag `sourceId`),靠 promoted field 让 `clip.SourceStart` / `clip.ProgramStart` 现有访问继续可用
-- [ ] `project.go`:`VideoTrack.Clips` / `AudioTrack.Clips` 类型由 `[]common.Clip` 改为 `[]Clip`(本包的扩展型);所有现有引用同步更新
-- [ ] `Validate()`:对每个 clip 校验 `SourceID != ""` 且能在 `Project.Sources` 中找到;视频轨上的 clip 必须指向 `Kind=video` 的 source,音频轨可指向任一 source
-- [ ] `project_test.go`:补一个测例覆盖"clip 的 SourceID 不存在于 Sources" → expect 错误
-- [ ] `addSource(p, src) (*Project, error)` / `removeSource(p, sid) (*Project, error)` 纯函数;`removeSource` 须先确认无 clip 引用
-- [ ] `addVideoTrack(p) / addAudioTrack(p)` 返回新轨 id
-- [ ] `domain` 测试覆盖以上纯函数(含"删除被引用的 source 应失败")
+- [x] `clip.go`(新文件):新建 multitrack 专属 `Clip` struct,**嵌入** `common.Clip` 并加 `SourceID` 字段(JSON tag `sourceId`),靠 promoted field 让 `clip.SourceStart` / `clip.ProgramStart` 现有访问继续可用
+- [x] `project.go`:`VideoTrack.Clips` / `AudioTrack.Clips` 类型由 `[]common.Clip` 改为 `[]Clip`(本包的扩展型);所有现有引用同步更新
+- [x] `Validate()`:对每个 clip 校验 `SourceID != ""` 且能在 `Project.Sources` 中找到;视频轨上的 clip 必须指向 `Kind=video` 的 source,音频轨可指向任一 source
+- [x] `project_test.go`:补一个测例覆盖"clip 的 SourceID 不存在于 Sources" → expect 错误
+- [x] `sources.go` 新文件:`AddSource(p, src) (*Project, error)` / `RemoveSource(p, sid) (*Project, error)` 纯函数;`RemoveSource` 须先确认无 clip 引用
+- [x] `AddVideoTrack(p) / AddAudioTrack(p)` 返回新轨 id
+- [x] `domain` 测试覆盖以上纯函数(含"删除被引用的 source 应失败")
 
 #### A.2 `multitrack/api/`
 
-- [ ] `dto.go`:加 `importSourcesRequest { Paths []string }` + `importSourcesResponse { Sources []Source }`
-- [ ] `handlers_sources.go`(新文件):
-  - `POST /api/multitrack/projects/:id/sources` body `{paths: [...]}`,逐个 ffprobe(走 `MediaProber`),写回项目 + 自动 `Save`,返回新增的 sources
+- [x] `dto.go`:加 `importSourcesRequest { Paths []string }` + `importSourcesResponse { Sources []Source, Project *Project, Errors [...] }`
+- [x] `handlers_sources.go`(新文件):
+  - `POST /api/multitrack/projects/:id/sources` body `{paths: [...]}`,逐个 ffprobe(走 `MediaProber`),写回项目 + 自动 `Save`,返回新增的 sources(部分失败仍返回 200,失败 path 进 `errors[]`)
   - `DELETE /api/multitrack/projects/:id/sources/:sid`,先查无引用再删
-- [ ] `handlers_source_serve.go`(新文件):`GET /api/multitrack/source?projectId=&sourceId=`,沿 `editor/api/handlers_source.go` 的 `http.ServeContent` 写法,根据项目 + sourceId 解析路径 → 流式服务(支持 Range)
-- [ ] `routes.go`:挂上面 3 条路由;`Router` 拆出 `SourceHandlers` 子结构(参考 editor 的分法)
+- [x] `handlers_source_serve.go`(新文件):`GET /api/multitrack/source?projectId=&sourceId=`,沿 `editor/api/handlers_source.go` 的 `http.ServeContent` 写法,根据项目 + sourceId 解析路径 → 流式服务(支持 Range)
+- [x] `routes.go`:挂上面 3 条路由;`/projects/` 通过 `handleProjectsTree` 分发给 `proj.getUpdateDelete` 或 `sources.dispatch`
 
 #### A.3 验证
 
-- [ ] `go test ./multitrack/...` 全绿
-- [ ] `CGO_ENABLED=0 go test ./...` 全绿
-- [ ] `go build ./...` 通过
+- [x] `go test ./multitrack/...` 全绿
+- [x] `CGO_ENABLED=0 go test ./...` 全绿
+- [x] `go build ./...` 通过
 
 ### B. 前端
 
 #### B.1 类型
 
-- [ ] `web/src/api/multitrack.ts`:`MultitrackClip = TimelineClip & { sourceId: string }`,`MultitrackVideoTrack.clips` / `MultitrackAudioTrack.clips` 改类型;补 `importSources` / `removeSource` / `sourceUrl(projectId, sourceId)` 三个 API
+- [x] `web/src/api/multitrack.ts`:`MultitrackClip = TimelineClip & { sourceId: string }`,`MultitrackVideoTrack.clips` / `MultitrackAudioTrack.clips` 改类型;补 `importSources` / `removeSource` / `sourceUrl(projectId, sourceId)` 三个 API + `MultitrackImportResponse` 类型
 
 #### B.2 Store
 
-- [ ] `web/src/stores/multitrack.ts`:加 `importSources(paths) / removeSource(sid)` action;加 `addVideoTrack() / addAudioTrack()`;dirty 标记 + autosave 接通(已有);加 `topVideoActive(playhead)` getter,返回 `{ track, clip, source, srcTime } | null`(供预览找顶层)
-- [ ] M6 暂不引入 selection / playhead / range / undo — 这些 M7 再加;但要加 `playhead`(预览要用)+ `playing` + `pxPerSecond`
+- [x] `web/src/stores/multitrack.ts`:加 `importSources(paths) / removeSource(sid)` action;加 `addVideoTrack() / addAudioTrack() / appendClip(kind, trackId, clip)`;dirty 标记 + autosave 接通(已有);加 `topVideoActive(playhead)` / `audioActive(track, playhead)` getter,返回 `{ track, clip, source, srcTime } | null`
+- [x] M6 暂不引入 selection / range / undo — 这些 M7 再加;加 `playhead` + `playing` + `pxPerSecond` + `programDuration` computed
 
 #### B.3 组件
 
-- [ ] `web/src/components/multitrack/MultitrackLibrary.vue`(新):左侧 240px 栏,顶部"导入"按钮 + 文件列表;空状态文案;Ctrl+L 折叠用 store flag(M7 接键盘)
-- [ ] `web/src/components/multitrack/MultitrackLibraryItem.vue`(新):单 source 缩略卡,显示 kind 图标 + 文件名 + 时长 + 分辨率(视频);双击 = 试听(可省到 M7);拖出 = 设 `dataTransfer` 携带 `{ sourceId }` JSON
-- [ ] `web/src/components/multitrack/MultitrackPreview.vue`(新):上半屏,1 `<video ref=vMain muted>` + N `<audio ref=aTrack[i]>`;`useMultitrackPreview` 接管同步
-- [ ] `web/src/components/multitrack/MultitrackTopBar.vue`(新,可选):若 M5 顶栏复杂度上来了再抽;否则继续用 `MultitrackView.vue` 内联顶栏
+- [x] `web/src/components/multitrack/MultitrackLibrary.vue`(新):左侧 240px 栏,顶部"导入"按钮 + 文件列表;空状态文案;Ctrl+L 折叠 M7 再加(本 M 不阻断)
+- [x] `web/src/components/multitrack/MultitrackLibraryItem.vue`(新):单 source 缩略卡,显示 kind 图标 + 文件名 + 时长 + 分辨率(视频);拖出 = 设 `dataTransfer` 携带 `application/x-easy-ffmpeg-source` JSON `{ sourceId }`(双击试听暂留 M7)
+- [x] `web/src/components/multitrack/MultitrackPreview.vue`(新):上半屏,1 `<video ref=videoRef muted>` + N `<audio>`(v-for over audioTracks);`useMultitrackPreview` 接管同步;多视频轨叠加时右上角"预览仅显示顶层视频轨"提示
+- [ ] `MultitrackTopBar.vue`:暂不抽,内联在 `MultitrackView.vue`(顶栏复杂度可控)
 
 #### B.4 Composable
 
-- [ ] `web/src/composables/useMultitrackPreview.ts`(新):
-  - 单 `<video>` 切源:`onTick` 找 `topVideoActive`,若 `vMain.src !== sourceUrl(source.id)` 则 `vMain.src = …; await vMain.load(); vMain.currentTime = srcTime`
-  - 多 `<audio>` 同步:每条音频轨找 `findActive`,设 src + currentTime + play/pause
-  - WebAudio gain pipeline 复用 `composables/timeline/useAudioGain.ts`(每条轨独立 GainNode + 全局 master)
+- [x] `web/src/composables/useMultitrackPreview.ts`(新):
+  - 单 `<video>` 切源:`evaluate()` 调用 `topVideoActive`,变更则 `v.src = sourceUrl(...)` + `currentTime = srcTime`(`loadedmetadata` 后再次校正)
+  - 多 `<audio>` 同步:逐轨 `audioActive(track, t)`,设 src + currentTime + play/pause;muted 轨道直接暂停
+  - 每条音频轨独立 WebAudio GainNode(轨级 volume × 全局 audioVolume),回退到 `audio.volume` 上限 1.0
   - GapClock 复用 `composables/timeline/useGapClock.ts`(全空 / 全 gap 时驱动 playhead)
 
 #### B.5 视图
 
-- [ ] `web/src/views/MultitrackView.vue`:
+- [x] `web/src/views/MultitrackView.vue`:
   - 替换 M5 中央占位,接入 `MultitrackLibrary` 左侧 + `MultitrackPreview` 上 + `TimelineRuler / TimelineTrackRow` v-for 多轨 + `PlayBar` 底
-  - 时间轴空白处接 `dragover/drop`,解析 `dataTransfer` → 调 store 自动建轨 action
-  - 已有轨道接 `dragover/drop`,落到该轨指定 program 时间(M6 简化:落到 playhead;精确落点 M7)
-  - 多视频轨叠加场景:在预览右上角加"⓵预览仅顶层"提示文案
-- [ ] 工具条:`+视频轨` / `+音频轨` 按钮(`MultitrackToolbar.vue` 单独抽 or 内联,先内联评估)
+  - 时间轴空白处接 `dragover/drop`,解析 `dataTransfer` → 调 `addVideoTrack/addAudioTrack` + `appendClip` 自动建轨
+  - 已有轨道接 `@dragover/@drop.stop`,落到该轨 + playhead 时间(M6 简化:精确落点 M7)
+  - 多视频轨叠加场景:`MultitrackPreview` 自带提示文案,本 M5 视图不重复
+- [x] 工具条:`+视频轨` / `+音频轨` / `关闭工程` 按钮内联在顶栏
 
 ### C. 验收
 
-- [ ] `cd web && npx vue-tsc --noEmit` + `cd web && npm run build` 全绿
-- [ ] `go build ./...` + `go test ./...` + `CGO_ENABLED=0 go test ./...` 全绿
+- [x] `cd web && npx vue-tsc --noEmit` + `cd web && npm run build` 全绿
+- [x] `go build ./...` + `go test ./...` + `CGO_ENABLED=0 go test ./...` 全绿
 - [ ] **手测清单**(M6 终态,用户侧):
   - [ ] 新建空多轨工程 → 进入工程
   - [ ] 通过素材库导入 1 个有视频有音频的 mp4 → 看到 source 卡

@@ -22,14 +22,12 @@ const SchemaVersion = 1
 // cross-loading and lets future tooling distinguish them at a glance.
 const KindMultitrack = "multitrack"
 
-// Clip is the shared clip primitive. Aliased here so multitrack/domain.Clip
-// keeps a stable name across the package boundary while the actual
-// definition lives once in editor/common/domain.
-type Clip = common.Clip
-
 // ExportSettings is shared with single-video; aliased here so
 // Project.Export keeps its current JSON shape across both editors.
 type ExportSettings = common.ExportSettings
+
+// Clip is defined in clip.go — multitrack extends common.Clip with a
+// SourceID field so the same track can mix slices of different sources.
 
 // SourceKind labels a source as carrying video (with optional audio) or
 // audio only. Determines which track types can reference it.
@@ -120,12 +118,12 @@ func NewProject(id, name string, now time.Time) *Project {
 func (p *Project) ProgramDuration() float64 {
 	var max float64
 	for _, t := range p.VideoTracks {
-		if d := common.TrackDuration(t.Clips); d > max {
+		if d := common.TrackDuration(toCommonClips(t.Clips)); d > max {
 			max = d
 		}
 	}
 	for _, t := range p.AudioTracks {
-		if d := common.TrackDuration(t.Clips); d > max {
+		if d := common.TrackDuration(toCommonClips(t.Clips)); d > max {
 			max = d
 		}
 	}
@@ -139,6 +137,10 @@ func (p *Project) ProgramDuration() float64 {
 // enforces:
 //   - Kind == KindMultitrack
 //   - Track ids unique within their kind
+//   - Every clip has a non-empty SourceID that resolves in p.Sources
+//   - Video-track clips must point at a SourceVideo; audio-track clips may
+//     point at either kind (an audio track can mix audio-only sources with
+//     audio extracted from video sources).
 //   - Video tracks have no leading gap (program rule from product.md);
 //     audio tracks may start with a gap (anullsrc fills it on export).
 func (p *Project) Validate() []error {
@@ -150,6 +152,23 @@ func (p *Project) Validate() []error {
 		errs = append(errs, fmt.Errorf("project kind = %q (want %q)", p.Kind, KindMultitrack))
 	}
 
+	// Build a quick id -> kind map for clip-source lookups.
+	srcKind := make(map[string]string, len(p.Sources))
+	seenSrc := map[string]bool{}
+	for i, s := range p.Sources {
+		if s.ID == "" {
+			errs = append(errs, fmt.Errorf("sources[%d]: id is empty", i))
+		}
+		if seenSrc[s.ID] {
+			errs = append(errs, fmt.Errorf("sources[%d]: duplicate id %q", i, s.ID))
+		}
+		seenSrc[s.ID] = true
+		if s.Kind != SourceVideo && s.Kind != SourceAudio {
+			errs = append(errs, fmt.Errorf("sources[%d]: invalid kind %q", i, s.Kind))
+		}
+		srcKind[s.ID] = s.Kind
+	}
+
 	seenVideo := map[string]bool{}
 	for i, t := range p.VideoTracks {
 		if t.ID == "" {
@@ -159,9 +178,24 @@ func (p *Project) Validate() []error {
 			errs = append(errs, fmt.Errorf("videoTracks[%d]: duplicate id %q", i, t.ID))
 		}
 		seenVideo[t.ID] = true
-		errs = append(errs, common.ValidateClips(t.Clips, fmt.Sprintf("videoTracks[%d]", i), 0)...)
-		if len(t.Clips) > 0 && common.EarliestProgramStart(t.Clips) > common.SnapEpsilon {
+		shared := toCommonClips(t.Clips)
+		errs = append(errs, common.ValidateClips(shared, fmt.Sprintf("videoTracks[%d]", i), 0)...)
+		if len(shared) > 0 && common.EarliestProgramStart(shared) > common.SnapEpsilon {
 			errs = append(errs, fmt.Errorf("videoTracks[%d]: leading gap not allowed on video", i))
+		}
+		for j, c := range t.Clips {
+			if c.SourceID == "" {
+				errs = append(errs, fmt.Errorf("videoTracks[%d][%d]: sourceId is empty", i, j))
+				continue
+			}
+			k, ok := srcKind[c.SourceID]
+			if !ok {
+				errs = append(errs, fmt.Errorf("videoTracks[%d][%d]: sourceId %q not found in sources", i, j, c.SourceID))
+				continue
+			}
+			if k != SourceVideo {
+				errs = append(errs, fmt.Errorf("videoTracks[%d][%d]: sourceId %q is %s, video track requires video", i, j, c.SourceID, k))
+			}
 		}
 	}
 
@@ -174,7 +208,16 @@ func (p *Project) Validate() []error {
 			errs = append(errs, fmt.Errorf("audioTracks[%d]: duplicate id %q", i, t.ID))
 		}
 		seenAudio[t.ID] = true
-		errs = append(errs, common.ValidateClips(t.Clips, fmt.Sprintf("audioTracks[%d]", i), 0)...)
+		errs = append(errs, common.ValidateClips(toCommonClips(t.Clips), fmt.Sprintf("audioTracks[%d]", i), 0)...)
+		for j, c := range t.Clips {
+			if c.SourceID == "" {
+				errs = append(errs, fmt.Errorf("audioTracks[%d][%d]: sourceId is empty", i, j))
+				continue
+			}
+			if _, ok := srcKind[c.SourceID]; !ok {
+				errs = append(errs, fmt.Errorf("audioTracks[%d][%d]: sourceId %q not found in sources", i, j, c.SourceID))
+			}
+		}
 	}
 	return errs
 }

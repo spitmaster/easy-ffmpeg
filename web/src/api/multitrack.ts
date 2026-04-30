@@ -6,8 +6,8 @@ import { fetchJson, getJson, postJson } from './client'
  * the Go side. Source of truth for both the JSON file format
  * (~/.easy-ffmpeg/multitrack/<id>.json) and the API.
  *
- * M5 surface is intentionally minimal: project CRUD only. Sources /
- * export endpoints arrive in M6 and M8.
+ * M6 adds source import / removal + a streaming endpoint for <video> /
+ * <audio>. Export endpoints arrive in M8.
  */
 
 export const SOURCE_VIDEO = 'video' as const
@@ -27,11 +27,18 @@ export interface MultitrackSource {
   hasAudio: boolean
 }
 
+/**
+ * Multitrack-specific clip — extends the shared TimelineClip with the id
+ * of the source it slices. Mirrors multitrack/domain.Clip on the Go side
+ * (an embedded common.Clip + a SourceID field).
+ */
+export type MultitrackClip = TimelineClip & { sourceId: string }
+
 export interface MultitrackVideoTrack {
   id: string
   locked?: boolean
   hidden?: boolean
-  clips: TimelineClip[]
+  clips: MultitrackClip[]
 }
 
 export interface MultitrackAudioTrack {
@@ -39,7 +46,7 @@ export interface MultitrackAudioTrack {
   locked?: boolean
   muted?: boolean
   volume: number  // 0–2.0
-  clips: TimelineClip[]
+  clips: MultitrackClip[]
 }
 
 export interface MultitrackProject {
@@ -68,6 +75,17 @@ export interface MultitrackProjectSummary {
   updatedAt: string
 }
 
+export interface MultitrackImportError {
+  path: string
+  error: string
+}
+
+export interface MultitrackImportResponse {
+  sources: MultitrackSource[]
+  project: MultitrackProject
+  errors?: MultitrackImportError[]
+}
+
 export const multitrackApi = {
   listProjects: () =>
     getJson<MultitrackProjectSummary[]>('/api/multitrack/projects'),
@@ -90,6 +108,24 @@ export const multitrackApi = {
       method: 'DELETE',
     }),
 
-  // M6+: importSources, removeSource, sourceUrl
+  importSources: (projectId: string, paths: string[]) =>
+    postJson<MultitrackImportResponse>(
+      `/api/multitrack/projects/${encodeURIComponent(projectId)}/sources`,
+      { paths },
+    ),
+
+  removeSource: (projectId: string, sourceId: string) =>
+    fetchJson<MultitrackProject>(
+      `/api/multitrack/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}`,
+      { method: 'DELETE' },
+    ),
+
+  /**
+   * URL the browser hits for a Range-served source file. Used by both
+   * <video src=…> in MultitrackPreview and <audio src=…> per audio track.
+   */
+  sourceUrl: (projectId: string, sourceId: string) =>
+    `/api/multitrack/source?projectId=${encodeURIComponent(projectId)}&sourceId=${encodeURIComponent(sourceId)}`,
+
   // M8+: exportPreview, startExport, cancelExport
 }
