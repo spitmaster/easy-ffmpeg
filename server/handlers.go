@@ -4,6 +4,7 @@ import (
 	"easy-ffmpeg/config"
 	"easy-ffmpeg/internal/browser"
 	"easy-ffmpeg/internal/embedded"
+	"easy-ffmpeg/internal/version"
 	"easy-ffmpeg/service"
 	"encoding/json"
 	"fmt"
@@ -234,6 +235,11 @@ type convertRequest struct {
 	AudioEncoder string `json:"audioEncoder"`
 	Format       string `json:"format"`
 	Overwrite    bool   `json:"overwrite"`
+	// DryRun means "build the command and return it, but don't start
+	// ffmpeg, don't mkdir the output dir, don't check for existing files".
+	// Used by the front-end pre-execution confirmation dialog so the user
+	// sees the exact command that would run before committing.
+	DryRun bool `json:"dryRun"`
 }
 
 func buildFFmpegArgs(req convertRequest) []string {
@@ -286,13 +292,31 @@ func (s *Server) handleConvertStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "missing required fields")
 		return
 	}
-	if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
-		writeErr(w, http.StatusBadRequest, "cannot create output dir: "+err.Error())
+	if !req.DryRun {
+		if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
+			writeErr(w, http.StatusBadRequest, "cannot create output dir: "+err.Error())
+			return
+		}
+	}
+
+	args := buildFFmpegArgs(req)
+	command := "ffmpeg " + strings.Join(args, " ")
+	outputPath := filepath.Join(req.OutputDir, req.OutputName+"."+req.Format)
+
+	// DryRun: hand back the command without touching the filesystem or
+	// starting ffmpeg. Front-end uses this for the pre-execution confirm
+	// dialog. Overwrite check is intentionally skipped here — that
+	// concern fires on the real-run POST.
+	if req.DryRun {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"dryRun":  true,
+			"command": command,
+		})
 		return
 	}
 
 	// 目标文件已存在且未授权覆盖 → 返回 409 让前端弹确认框
-	outputPath := filepath.Join(req.OutputDir, req.OutputName+"."+req.Format)
 	if !req.Overwrite {
 		if _, err := os.Stat(outputPath); err == nil {
 			writeJSON(w, http.StatusConflict, map[string]interface{}{
@@ -304,7 +328,6 @@ func (s *Server) handleConvertStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	args := buildFFmpegArgs(req)
 	if err := s.jobs.Start(service.GetFFmpegPath(), args); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
@@ -312,7 +335,7 @@ func (s *Server) handleConvertStart(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
-		"command": "ffmpeg " + strings.Join(args, " "),
+		"command": command,
 	})
 }
 
@@ -358,6 +381,12 @@ func (s *Server) handleConvertStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// ---------------- version ----------------
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": version.Version})
 }
 
 // ---------------- quit ----------------

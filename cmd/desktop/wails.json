@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "easy-ffmpeg-desktop",
+  "outputfilename": "easy-ffmpeg-desktop",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "wailsjsdir": "./frontend",
+  "author": {
+    "name": "zyj"
+  },
+  "info": {
+    "productName": "Easy FFmpeg",
+    "productVersion": "0.4.0",
+    "comments": "跨平台图形化 FFmpeg 工具(桌面版)"
+  }
+}

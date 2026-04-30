@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Easy FFmpeg</title>
   <link rel="stylesheet" href="/app.css" />
+  <link rel="stylesheet" href="/editor/editor.css" />
 </head>
 <body>
   <header class="topbar">
@@ -13,6 +14,7 @@
       <span class="title">Easy FFmpeg</span>
     </div>
     <div class="topbar-right">
+      <span id="appVersion" class="version-chip" title="程序版本"></span>
       <span id="ffmpegStatus" class="status-chip">检测中...</span>
       <button id="quitBtn" class="btn btn-ghost" title="退出程序">退出</button>
     </div>
@@ -20,8 +22,8 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="convert">视频转换</button>
-    <button class="tab" data-tab="trim" disabled>视频裁剪</button>
-    <button class="tab" data-tab="audio" disabled>音频处理</button>
+    <button class="tab" data-tab="audio">音频处理</button>
+    <button class="tab" data-tab="editor">单视频剪辑</button>
     <button class="tab" data-tab="info" disabled>媒体信息</button>
     <button class="tab" data-tab="settings" disabled>设置</button>
   </nav>
@@ -87,6 +89,11 @@
         <span id="jobState" class="muted">空闲</span>
       </div>
 
+      <div id="progressWrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+        <span id="progressText" class="progress-text">0%</span>
+      </div>
+
       <div class="field">
         <label>转码日志</label>
         <div id="log" class="log"></div>
@@ -97,7 +104,481 @@
         </div>
       </div>
     </section>
+
+    <section class="panel hidden" id="panel-audio">
+      <div class="segmented" id="audioModeSwitch" role="tablist">
+        <button class="seg active" data-mode="convert">格式转换</button>
+        <button class="seg" data-mode="extract">从视频提取</button>
+        <button class="seg" data-mode="merge">音频合并</button>
+      </div>
+
+      <!-- convert mode -->
+      <div class="mode-body" data-mode-body="convert">
+        <div class="field">
+          <label>输入音频</label>
+          <div class="row">
+            <button class="btn" id="audioConvertPickInput">选择文件</button>
+            <input id="audioConvertInput" type="text" placeholder="选择或粘贴输入音频路径..." />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出目录 / 文件名</label>
+          <div class="row">
+            <button class="btn" id="audioConvertPickOutDir">选择目录</button>
+            <input id="audioConvertOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+            <button class="btn btn-icon" id="audioConvertOpenOutDir" title="在资源管理器中打开输出目录" disabled>📂</button>
+            <input id="audioConvertOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>格式 / 编码器 / 码率</label>
+          <div class="row">
+            <select id="audioConvertFormat">
+              <option value="mp3">mp3</option>
+              <option value="m4a">m4a</option>
+              <option value="flac">flac</option>
+              <option value="wav">wav</option>
+              <option value="ogg">ogg</option>
+              <option value="opus">opus</option>
+            </select>
+            <select id="audioConvertCodec"></select>
+            <select id="audioConvertBitrate">
+              <option value="64">64 kbps</option>
+              <option value="96">96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="160">160 kbps</option>
+              <option value="192" selected>192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+              <option value="copy">保持原码率</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>采样率 / 声道</label>
+          <div class="row">
+            <select id="audioConvertSampleRate">
+              <option value="0">原始采样率</option>
+              <option value="48000">48000 Hz</option>
+              <option value="44100">44100 Hz</option>
+              <option value="22050">22050 Hz</option>
+              <option value="8000">8000 Hz</option>
+            </select>
+            <select id="audioConvertChannels">
+              <option value="0">原始声道</option>
+              <option value="2">立体声 (2)</option>
+              <option value="1">单声道 (1)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- extract mode -->
+      <div class="mode-body hidden" data-mode-body="extract">
+        <div class="field">
+          <label>输入视频</label>
+          <div class="row">
+            <button class="btn" id="audioExtractPickInput">选择文件</button>
+            <input id="audioExtractInput" type="text" placeholder="选择或粘贴视频路径..." />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>音轨</label>
+          <div class="row">
+            <select id="audioExtractStream" style="flex:2" disabled>
+              <option value="">（请选择视频文件）</option>
+            </select>
+            <span id="audioExtractStreamHint" class="muted" style="align-self:center;flex:1"></span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出方式</label>
+          <div class="radio-row">
+            <label><input type="radio" name="audioExtractMethod" value="copy" checked> 直接拷贝（无损、秒完成）</label>
+            <label><input type="radio" name="audioExtractMethod" value="transcode"> 转码为指定格式</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出目录 / 文件名</label>
+          <div class="row">
+            <button class="btn" id="audioExtractPickOutDir">选择目录</button>
+            <input id="audioExtractOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+            <button class="btn btn-icon" id="audioExtractOpenOutDir" title="在资源管理器中打开" disabled>📂</button>
+            <input id="audioExtractOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" />
+          </div>
+        </div>
+
+        <!-- copy-method info -->
+        <div class="extract-sub" data-extract-sub="copy">
+          <div class="muted" id="audioExtractCopyHint">选择视频后根据音轨编码自动选择输出容器</div>
+        </div>
+
+        <!-- transcode-method params -->
+        <div class="extract-sub hidden" data-extract-sub="transcode">
+          <div class="field">
+            <label>格式 / 编码器 / 码率</label>
+            <div class="row">
+              <select id="audioExtractFormat">
+                <option value="mp3">mp3</option>
+                <option value="m4a">m4a</option>
+                <option value="flac">flac</option>
+                <option value="wav">wav</option>
+                <option value="ogg">ogg</option>
+                <option value="opus">opus</option>
+              </select>
+              <select id="audioExtractCodec"></select>
+              <select id="audioExtractBitrate">
+                <option value="64">64 kbps</option>
+                <option value="96">96 kbps</option>
+                <option value="128">128 kbps</option>
+                <option value="160">160 kbps</option>
+                <option value="192" selected>192 kbps</option>
+                <option value="256">256 kbps</option>
+                <option value="320">320 kbps</option>
+                <option value="copy">保持原码率</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>采样率 / 声道</label>
+            <div class="row">
+              <select id="audioExtractSampleRate">
+                <option value="0">原始采样率</option>
+                <option value="48000">48000 Hz</option>
+                <option value="44100">44100 Hz</option>
+                <option value="22050">22050 Hz</option>
+                <option value="8000">8000 Hz</option>
+              </select>
+              <select id="audioExtractChannels">
+                <option value="0">原始声道</option>
+                <option value="2">立体声 (2)</option>
+                <option value="1">单声道 (1)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- merge mode -->
+      <div class="mode-body hidden" data-mode-body="merge">
+        <div class="field">
+          <label>输入文件（按顺序拼接）</label>
+          <ul class="merge-list" id="audioMergeList"></ul>
+          <div><button class="btn" id="audioMergeAddBtn">+ 添加文件</button></div>
+        </div>
+
+        <div class="field">
+          <label>合并策略</label>
+          <div class="radio-row">
+            <label><input type="radio" name="audioMergeStrategy" value="auto" checked> 自动判断</label>
+            <label><input type="radio" name="audioMergeStrategy" value="copy"> 快速拼接（编码一致）</label>
+            <label><input type="radio" name="audioMergeStrategy" value="reencode"> 重编码拼接</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>输出目录 / 文件名</label>
+          <div class="row">
+            <button class="btn" id="audioMergePickOutDir">选择目录</button>
+            <input id="audioMergeOutDir" type="text" placeholder="输出目录..." style="flex:2" />
+            <button class="btn btn-icon" id="audioMergeOpenOutDir" title="在资源管理器中打开" disabled>📂</button>
+            <input id="audioMergeOutName" type="text" placeholder="文件名（不含后缀）" style="flex:1" value="merged" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>格式 / 编码器 / 码率（仅重编码分支用到；copy 分支仅用格式作后缀）</label>
+          <div class="row">
+            <select id="audioMergeFormat">
+              <option value="mp3">mp3</option>
+              <option value="m4a">m4a</option>
+              <option value="flac">flac</option>
+              <option value="wav">wav</option>
+              <option value="ogg">ogg</option>
+              <option value="opus">opus</option>
+            </select>
+            <select id="audioMergeCodec"></select>
+            <select id="audioMergeBitrate">
+              <option value="64">64 kbps</option>
+              <option value="96">96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="160">160 kbps</option>
+              <option value="192" selected>192 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="320">320 kbps</option>
+              <option value="copy">保持原码率</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>命令预览</label>
+        <pre id="audioCommandPreview" class="command-preview">ffmpeg ...</pre>
+      </div>
+
+      <div class="action-row">
+        <button id="audioStartBtn" class="btn btn-primary">开始处理</button>
+        <button id="audioCancelBtn" class="btn btn-danger" disabled>取消</button>
+        <span id="audioJobState" class="muted">空闲</span>
+      </div>
+
+      <div id="audioProgressWrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="audioProgressFill" class="progress-fill"></div></div>
+        <span id="audioProgressText" class="progress-text">0%</span>
+      </div>
+
+      <div class="field">
+        <label>处理日志</label>
+        <div id="audioLog" class="log"></div>
+        <div id="audioFinishBar" class="finish-bar hidden">
+          <span id="audioFinishText"></span>
+          <div class="spacer"></div>
+          <button id="audioFinishRevealBtn" class="btn hidden">📂 打开文件夹</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="panel-editor">
+      <!-- 主功能列：顶栏 + 空态 + 工作区。导出时日志面板在这一列右侧并存。 -->
+      <div class="editor-content">
+      <!-- 顶栏 -->
+      <div class="editor-topbar">
+        <button class="btn" id="edOpenVideo">📂 打开视频</button>
+        <button class="btn" id="edProjects">📋 剪辑记录</button>
+        <input type="text" id="edProjectName" class="editor-project-name" placeholder="工程名" />
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="edExport" disabled>导出</button>
+      </div>
+
+      <!-- 空态 -->
+      <div class="editor-empty" id="edEmpty">
+        <div class="editor-empty-title">尚未导入视频</div>
+        <div class="editor-empty-hint">点击顶栏「📂 打开视频」选择要剪辑的视频文件，或从「📋 剪辑记录」打开历史工程</div>
+      </div>
+
+      <!-- 工作区 -->
+      <div class="editor-workspace hidden" id="edWorkspace">
+        <!-- 预览 -->
+        <div class="editor-preview">
+          <video id="edVideo" preload="auto" muted></video>
+          <!-- Audio is decoded in a separate element so audio-track edits
+               can be previewed independently of the video track. Hidden:
+               audio has no visual. -->
+          <audio id="edAudio" preload="auto" style="display:none"></audio>
+        </div>
+
+        <!-- 播控 -->
+        <div class="editor-playbar">
+          <button class="btn btn-icon" id="edPrevClip" title="上一片段 (←)">⏮</button>
+          <button class="btn btn-icon" id="edPlayPause" title="播放 / 暂停 (Space)">▶</button>
+          <button class="btn btn-icon" id="edNextClip" title="下一片段 (→)">⏭</button>
+          <span class="editor-timecode" id="edTimecode">00:00:00.000 / 00:00:00.000</span>
+          <div class="spacer"></div>
+        </div>
+
+        <!-- 时间轴 -->
+        <div class="editor-timeline">
+          <!-- 左侧轨道标签列 -->
+          <div class="timeline-labels">
+            <div class="timeline-label-ruler"></div>
+            <div class="timeline-label video">🎬 视频</div>
+            <div class="timeline-label audio">🔊 音频</div>
+          </div>
+          <!-- 每条轨道的快捷操作列：与轨道一一对齐，目前只放音频音量按钮 -->
+          <div class="timeline-track-actions">
+            <div class="timeline-track-action-cell ruler"></div>
+            <div class="timeline-track-action-cell video"></div>
+            <div class="timeline-track-action-cell audio">
+              <button id="edAudioVolumeBtn" class="audio-volume-toggle" title="音频音量（点击调节）" aria-haspopup="true" aria-expanded="false">音量: 100%</button>
+            </div>
+          </div>
+          <!-- 右侧滚动区 -->
+          <div class="timeline-scroll" id="edTimelineScroll">
+            <div class="timeline-ruler" id="edRuler"></div>
+            <div class="timeline-track timeline-video" id="edVideoTrack">
+              <div class="timeline-playhead timeline-playhead-single" id="edPlayheadVideo" style="display:none"></div>
+            </div>
+            <div class="timeline-track timeline-audio" id="edAudioTrack">
+              <div class="timeline-playhead timeline-playhead-single" id="edPlayheadAudio" style="display:none"></div>
+            </div>
+            <!-- 大游标覆盖 ruler + 两轨 -->
+            <div class="timeline-playhead timeline-playhead-big" id="edPlayheadBig" style="display:none"></div>
+            <!-- 右键拖出来的时间范围选区 -->
+            <div class="timeline-range-selection" id="edRangeSel" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 工具条 -->
+        <div class="editor-toolbar">
+          <button class="btn" id="edSplit" title="在播放头位置分割 (S)">✂ 分割</button>
+          <button class="btn btn-danger" id="edDelete" title="删除选中 (Del)" disabled>🗑 删除</button>
+          <button class="btn" id="edUndo" title="撤销 (Ctrl+Z)" disabled>↶ 撤销</button>
+          <button class="btn" id="edRedo" title="重做 (Ctrl+Y)" disabled>↷ 重做</button>
+          <span class="muted editor-scope-label" id="edSplitScopeLabel">当前分割范围：两轨一起</span>
+          <div class="spacer"></div>
+          <label class="editor-zoom">缩放 <input type="range" id="edZoom" min="0.05" max="80" step="0.01" value="8" title="Ctrl+滚轮缩放，滚轮左右滚动"></label>
+        </div>
+      </div>
+
+      </div>
+
+      <!-- 导出日志面板：与 .editor-content 平级，导出启动时从整个剪辑功能区
+           右侧滑入并占满垂直高度；工作区不被挤压（main 宽度同步放宽）。 -->
+      <aside class="editor-export-status hidden" id="edExportStatus">
+        <div class="editor-export-header">
+          <span class="editor-export-title">导出日志</span>
+          <span id="edExportState" class="muted">空闲</span>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost editor-export-close" id="edExportClosePanel" title="关闭日志面板">×</button>
+        </div>
+        <div id="edProgressWrap" class="progress-wrap hidden">
+          <div class="progress-bar"><div id="edProgressFill" class="progress-fill"></div></div>
+          <span id="edProgressText" class="progress-text">0%</span>
+        </div>
+        <div id="edExportLog" class="log"></div>
+        <div class="action-row">
+          <button class="btn btn-danger" id="edExportCancelBtn" disabled>取消</button>
+        </div>
+        <div class="finish-bar hidden" id="edExportFinishBar">
+          <span id="edExportFinishText"></span>
+          <div class="spacer"></div>
+          <button id="edExportFinishReveal" class="btn hidden">📂 打开文件夹</button>
+        </div>
+      </aside>
+
+      <!-- 音频音量浮窗：position:fixed 渲染在视口顶层，避免被时间轴的
+           overflow:hidden 裁掉。打开时 JS 计算坐标贴到触发按钮下方/上方。
+           三段刻度(200/100/0) 与垂直滑块行高对齐，下方大号读数实时跟随。 -->
+      <div class="audio-volume-popover hidden" id="edAudioVolumePopover" role="dialog" aria-label="音频音量">
+        <div class="avp-title">音频音量</div>
+        <div class="avp-track">
+          <div class="avp-marks">
+            <span class="avp-mark top">200%</span>
+            <span class="avp-mark mid">100%</span>
+            <span class="avp-mark bot">0%</span>
+          </div>
+          <input type="range" id="edAudioVolume"
+                 orient="vertical" min="0" max="2" step="0.01" value="1"
+                 aria-label="音频音量（拖动调节，0–200%）" />
+        </div>
+        <div class="avp-readout" id="edAudioVolumePct">100%</div>
+      </div>
+    </section>
   </main>
+
+  <!-- 通用覆盖确认弹窗（替代浏览器原生 confirm，所有 Tab 共享） -->
+  <div class="modal-backdrop hidden" id="confirmOverwriteBackdrop">
+    <div class="modal modal-confirm" role="dialog" aria-labelledby="confirmOverwriteTitle">
+      <div class="modal-header">
+        <h3 id="confirmOverwriteTitle">目标文件已存在</h3>
+        <button class="btn btn-ghost" id="confirmOverwriteClose" title="关闭" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-message">是否覆盖现有文件？</p>
+        <div class="confirm-path" id="confirmOverwritePath"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="confirmOverwriteCancel">取消</button>
+        <button class="btn btn-primary" id="confirmOverwriteOk">覆盖</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 命令预览/确认弹窗：导出前显示真实将执行的 ffmpeg 命令，用户确认后再触发实际执行 -->
+  <div class="modal-backdrop hidden" id="confirmCommandBackdrop">
+    <div class="modal modal-confirm modal-command" role="dialog" aria-labelledby="confirmCommandTitle">
+      <div class="modal-header">
+        <h3 id="confirmCommandTitle">即将执行</h3>
+        <button class="btn btn-ghost" id="confirmCommandClose" title="关闭" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-message">下列 ffmpeg 命令将被执行，确认后开始：</p>
+        <pre class="confirm-command" id="confirmCommandText" tabindex="0" title="点击复制"></pre>
+        <span class="confirm-command-hint muted" id="confirmCommandHint">点击命令框可复制</span>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="confirmCommandCopy" type="button">📋 复制</button>
+        <div class="spacer"></div>
+        <button class="btn" id="confirmCommandCancel">取消</button>
+        <button class="btn btn-primary" id="confirmCommandOk">开始执行</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 剪辑记录模态框 -->
+  <div class="modal-backdrop hidden" id="edProjectsBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>剪辑记录</h3>
+        <button class="btn btn-ghost" id="edProjectsClose">×</button>
+      </div>
+      <div class="modal-body">
+        <ul class="editor-project-list" id="edProjectList"></ul>
+        <div class="muted editor-project-empty hidden" id="edProjectEmpty">暂无剪辑工程</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导出对话框 -->
+  <div class="modal-backdrop hidden" id="edExportBackdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>导出</h3>
+        <button class="btn btn-ghost" id="edExportClose">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>格式</label>
+          <select id="edExportFormat">
+            <option value="mp4">mp4</option>
+            <option value="mkv">mkv</option>
+            <option value="mov">mov</option>
+            <option value="webm">webm</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>视频编码</label>
+          <select id="edExportVideoCodec">
+            <option value="h264">h264 (H.264/AVC)</option>
+            <option value="h265">h265 (H.265/HEVC)</option>
+            <option value="vp9">vp9</option>
+            <option value="av1">av1</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>音频编码</label>
+          <select id="edExportAudioCodec">
+            <option value="aac">aac (AAC)</option>
+            <option value="mp3">mp3 (MP3)</option>
+            <option value="libopus">libopus (Opus)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>输出目录</label>
+          <div class="row">
+            <button class="btn" id="edExportPickDir">选择</button>
+            <input type="text" id="edExportOutDir" readonly style="flex:1" />
+          </div>
+        </div>
+        <div class="field">
+          <label>文件名（不含后缀）</label>
+          <input type="text" id="edExportOutName" />
+        </div>
+        <div class="action-row">
+          <div class="spacer"></div>
+          <button class="btn" id="edExportCancel">取消</button>
+          <button class="btn btn-primary" id="edExportStart">开始导出</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- File/Folder picker modal -->
   <div class="modal-backdrop hidden" id="pickerBackdrop">
@@ -139,5 +620,6 @@
   </div>
 
   <script src="/app.js"></script>
+  <script src="/editor/editor.js"></script>
 </body>
 </html>

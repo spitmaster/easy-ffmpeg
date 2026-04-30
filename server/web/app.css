@@ -64,6 +64,14 @@ body {
 .status-chip.clickable         { cursor: pointer; transition: background 0.15s; }
 .status-chip.clickable:hover   { background: rgba(16, 185, 129, 0.12); }
 
+.version-chip {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  user-select: text;
+}
+.version-chip:empty { display: none; }
+
 /* ---------------- tabs ---------------- */
 .tabs {
   display: flex;
@@ -98,6 +106,18 @@ main {
   flex-direction: column;
   box-sizing: border-box;
 }
+
+/* When the editor's export sidebar is active we drop <main>'s 1200px
+   centering cap entirely so main spans the full viewport width. The
+   sidebar then sits flush against the viewport's right padding, and the
+   centered "blank gutters" on either side of the editor disappear —
+   the user's full screen real estate gets used while the export is
+   running. The cap is only meaningful for the convert/audio tabs and
+   for the editor's idle state, where excessive line lengths would hurt
+   readability of forms and labels. */
+body.editor-export-active main {
+  max-width: none;
+}
 .panel {
   flex: 1;
   min-height: 0;
@@ -127,7 +147,7 @@ main {
 .row > select:first-of-type { flex: 2; }
 
 /* ---------------- form controls ---------------- */
-input[type="text"], select {
+input[type="text"], input[type="number"], select {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
@@ -138,10 +158,10 @@ input[type="text"], select {
   outline: none;
   transition: border-color 0.15s;
 }
-input[type="text"]:focus, select:focus {
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
   border-color: var(--accent);
 }
-input[type="text"]::placeholder { color: var(--muted); }
+input[type="text"]::placeholder, input[type="number"]::placeholder { color: var(--muted); }
 
 select {
   appearance: none;
@@ -203,6 +223,9 @@ select {
 
 /* ---------------- action row ---------------- */
 .action-row { display: flex; align-items: center; gap: 12px; }
+/* Inside dialog bodies, give the action row some breathing room so the
+   button doesn't crash into the last form input above it. */
+.modal-body > .action-row { margin-top: 18px; }
 .muted { color: var(--muted); font-size: 13px; }
 
 /* ---------------- log ---------------- */
@@ -223,6 +246,43 @@ select {
 .log .log-line.info      { color: var(--info); }
 .log .log-line.progress  { color: var(--warning); }
 
+/* Progress bar shown below the action row while a job runs. The track
+   plus a fixed-width percent label keeps the layout stable as the fill
+   grows; .hidden is used outside running windows so the bar collapses
+   completely (no awkward 0% strip lingering in the idle state). */
+.progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.progress-wrap.hidden { display: none; }
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  min-width: 80px;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  /* width transition is intentionally short — too long and the bar
+     visibly lags behind a fast convert; too short looks jittery on
+     bursty progress updates. ~150ms threads the needle. */
+  transition: width 0.15s linear;
+}
+.progress-text {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 38px;     /* keep the percent label from jiggling */
+  text-align: right;
+}
+
 /* 转码结束状态条（在日志框下方，不再挤在日志里） */
 .finish-bar {
   display: flex;
@@ -239,6 +299,109 @@ select {
 .finish-bar.error     { border-color: var(--danger);  color: var(--danger);  background: rgba(239, 68, 68, 0.08); }
 .finish-bar.cancelled { border-color: var(--warning); color: var(--warning); background: rgba(245, 158, 11, 0.08); }
 .finish-bar .spacer   { flex: 1; }
+
+/* ---------------- segmented (mode switch) ---------------- */
+.segmented {
+  display: inline-flex;
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  align-self: flex-start;
+  flex-shrink: 0;
+}
+.segmented .seg {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
+}
+.segmented .seg:hover:not(:disabled) { color: var(--text); }
+.segmented .seg.active               { background: var(--surface-2); color: var(--text); }
+.segmented .seg:disabled              { opacity: 0.4; cursor: not-allowed; }
+
+.mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.extract-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.radio-row { display: flex; gap: 20px; flex-wrap: wrap; padding: 4px 0; }
+.radio-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; color: var(--text); }
+.radio-row input[type="radio"] { accent-color: var(--accent); }
+
+.inline-fields { display: flex; gap: 12px; flex-wrap: wrap; }
+.inline-fields > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 140px;
+}
+.inline-fields > label.keep-ratio {
+  flex: 0 0 auto;
+  gap: 6px;
+  cursor: pointer;
+}
+.inline-fields > label.keep-ratio input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+.inline-fields > label > input,
+.inline-fields > label > select {
+  flex: 1;
+  min-width: 60px;
+}
+
+/* ---------------- audio merge list ---------------- */
+.merge-list {
+  list-style: none;
+  margin: 0 0 8px 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  max-height: 220px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.merge-list:empty::before {
+  content: "尚未添加文件";
+  display: block;
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+.merge-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.merge-list li:last-child { border-bottom: none; }
+.merge-list .drag-handle { color: var(--muted); user-select: none; }
+.merge-list .idx         { color: var(--muted); font-size: 12px; min-width: 20px; text-align: right; }
+.merge-list .name        { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.merge-list .meta        { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.merge-list button       { padding: 4px 8px; font-size: 13px; }
 
 /* ---------------- modal ---------------- */
 .modal-backdrop {
@@ -272,6 +435,73 @@ select {
 }
 .modal-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .modal-header .btn-ghost { font-size: 20px; padding: 2px 10px; }
+
+/* Compact variant for yes/no confirmations — narrower than the 720px
+   default so the dialog doesn't dwarf its short message. The body is
+   prose-friendly (line-height, padding), the path is monospace-styled
+   so long paths wrap predictably and read as "this is the file". */
+.modal.modal-confirm { width: 460px; max-height: none; }
+.modal.modal-confirm .modal-body { padding: 16px 18px; }
+.modal-confirm .confirm-message {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.modal-confirm .confirm-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  word-break: break-all;
+  max-height: 6em;
+  overflow: auto;
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+.modal-footer .spacer { flex: 1; }
+
+/* Command preview dialog: wider than the plain overwrite confirm so
+   long ffmpeg lines (filter_complex chains in particular) read on one
+   visible block. The pre block is selectable so the user can also drag
+   to copy a slice manually. */
+.modal.modal-command { width: 720px; max-width: 92vw; }
+.modal-command .confirm-command {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 280px;
+  overflow: auto;
+  cursor: pointer;        /* whole block is "click to copy" */
+}
+.modal-command .confirm-command:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.modal-command .confirm-command-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  transition: color 0.2s;
+}
+.modal-command .confirm-command-hint.copied { color: var(--accent); }
 
 .modal-breadcrumb {
   display: flex;

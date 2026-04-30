@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Easy FFmpeg</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #1a1a1a;
+      color: #d0d0d0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .shell {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+    .logo { font-size: 48px; }
+    .title { font-size: 20px; opacity: 0.85; }
+    .hint { font-size: 13px; opacity: 0.55; }
+    .err {
+      display: none;
+      max-width: 70%;
+      padding: 12px 16px;
+      border: 1px solid #5a3a3a;
+      border-radius: 6px;
+      background: #2a1a1a;
+      color: #f0a0a0;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="logo">🎬</div>
+    <div class="title">Easy FFmpeg</div>
+    <div class="hint" id="hint">正在启动后端服务…</div>
+    <div class="err" id="err"></div>
+  </div>
+  <script>
+    // Wait for the Go side to publish the bound HTTP URL, then redirect
+    // the WebView to it. After this point the UI is the real Web build,
+    // served by the embedded HTTP server on 127.0.0.1.
+    //
+    // Contract with Go (cmd/desktop/app.go):
+    //   - OnStartup binds the listener and stores the URL on App.
+    //   - OnDomReady (fires AFTER this <script> runs and registers the
+    //     listener below) emits 'backend-ready' with the URL string.
+    //
+    // If window.runtime is missing the build is misconfigured (Wails
+    // assets not loaded); we surface a visible error instead of a blank
+    // page so the user can report it.
+    (function () {
+      var hintEl = document.getElementById('hint');
+      var errEl = document.getElementById('err');
+
+      function fail(msg) {
+        hintEl.style.display = 'none';
+        errEl.style.display = 'block';
+        errEl.textContent = msg;
+      }
+
+      if (!window.runtime || typeof window.runtime.EventsOn !== 'function') {
+        fail('Wails runtime 未加载。请确认这是 wails build 产物;Web 版请直接打开浏览器访问。');
+        return;
+      }
+
+      var jumped = false;
+      window.runtime.EventsOn('backend-ready', function (url) {
+        if (jumped) return;
+        jumped = true;
+        if (typeof url !== 'string' || !url) {
+          fail('收到无效的后端地址,无法跳转。');
+          return;
+        }
+        hintEl.textContent = '正在加载界面…';
+        location.replace(url);
+      });
+
+      // Safety timeout: if the event never arrives the user sees a hint
+      // rather than an indefinite splash.
+      setTimeout(function () {
+        if (!jumped) {
+          fail('后端启动超时(>10s)。请检查日志或重启程序。');
+        }
+      }, 10000);
+    })();
+  </script>
+</body>
+</html>

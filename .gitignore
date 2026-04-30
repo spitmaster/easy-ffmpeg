@@ -31,3 +31,11 @@ build/
 # Environment
 .env
 .env.local
+
+# Wails desktop build artifacts (cmd/desktop/build/ already matched by
+# the generic build/ rule above; listed here for discoverability).
+# Note: cmd/desktop/frontend/dist/index.html IS committed — it is the
+# static shell loaded by Wails AssetServer, not a build product.
+cmd/desktop/build/bin/
+cmd/desktop/wailsjs/
+cmd/desktop/frontend/wailsjs/
