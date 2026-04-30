@@ -1,20 +1,23 @@
 # 多轨剪辑器 — `feature-v0.5.0/multitrack-editor` — 当前 M 的待办
 
 > 对应 milestones 文件:[../milestones/feature-v0.5.0_multitrack-editor.md](../milestones/feature-v0.5.0_multitrack-editor.md)
-> 当前 M:**M6 多源导入 + 多轨渲染**(M1 ✅ M2 ✅ M3 ✅ M4 ✅ M5 ✅ 已完成于 2026-04-30)
+> 当前 M:**M7 多源剪辑操作 + 跨轨拖动**(M1–M6 ✅ 已完成,M6 收尾日期 2026-05-01)
 >
-> **目标**(对照 milestones M6 行):跑通"导入素材 → 拖入时间轴 → 自动建轨 → N 条轨道渲染 → 预览看到顶层视频轨"。
-> 不在本 M 范围:剪辑操作(split / delete / trim / 跨轨拖动)留 M7;导出留 M8。
-> 设计参考:[../tabs/multitrack/program.md §3 §4 §6](../tabs/multitrack/program.md);[../tabs/multitrack/product.md §4 §5 §6](../tabs/multitrack/product.md)。
+> **目标**(对照 milestones M7 行):把 M4 抽出的共享 composable(`useTimelineDrag` / `useUndoStack` / `useTimelineRangeSelect` / `useTimelinePlayback`)接到多轨 store 上,让 split / delete / trim / 范围选区 / 重排 / 撤销重做在多轨模型上跑通,并新增**跨轨拖动**(同类型轨)。
+> 不在本 M 范围:导出(M8);position / scale / opacity / PiP(v2);多视频轨叠加的真合成预览(v2)。
+> 设计参考:[../tabs/multitrack/program.md §7 §2.2](../tabs/multitrack/program.md);[../tabs/multitrack/product.md §5](../tabs/multitrack/product.md)。
 
-## 关键设计决定(M6 内必须落定)
+## 关键设计决定(M7 内必须落定)
 
-- **`MultitrackClip` 必须带 `SourceID`**。M5 阶段 `multitrack/domain/Clip` 是 `common.Clip` 的 type alias,**不带** `SourceID`。M6 第一步把它替换成正经 struct(嵌入 `common.Clip` + 加 `SourceID string` 字段),否则预览 / 导出找不到 source。前端 `web/src/api/multitrack.ts` 的 `Clip` 类型也对应改。
-- **共享层不动**:`editor/common/domain/Clip` 与 `web/src/types/timeline.ts` 的 `Clip` 形状保持不变(单视频不需要 sourceId)。`TimelineClip.vue` / `TimelineTrackRow.vue` 接收的还是共享 `Clip`,sourceId 由多轨视图层在 emit 之前用 closure / props 配套传递。这是 [program.md §2.2.3](../tabs/multitrack/program.md) 的契约。
-- **预览方案**:v1 单 `<video>` 切源 + 每条音频轨独立 `<audio>` + WebAudio gain([program.md §6.1](../tabs/multitrack/program.md))。多视频轨叠加 v1 **预览只显示顶层**(轨号最大、命中 clip 的那条),UI 加灰底提示。
-- **轨道顺序**:轨号小→底层,大→顶层。前端列表与 z-order 保持一致。
-- **拖入空时间轴自动建轨规则**:视频 source → 视频轨 +(若 hasAudio)音频轨;纯音频 source → 音频轨。Clip 的 `programStart` 取 0,`sourceStart=0 / sourceEnd=Source.Duration`。
-- **多 Source 分辨率不一致**导出端在 M8 处理(scale + pad);M6 预览端不强求,只放当前 source 自然尺寸进 `<video>`。
+- **`splitScope` 形状**:单视频用 `'both' | 'video' | 'audio'`(`web/src/stores/editor.ts`)。多轨需要"全部 / 全部视频轨 / 全部音频轨 / 单条具体轨"。**采纳 `program.md §7` 提出的形状**:`'all' | 'video' | 'audio' | { kind: 'track'; id: string }`(对象形,避免字符串模板与 id 冲突);多轨 store 单独定义,不污染 editor.ts。
+- **selection 形状**:editor 用 `{ track: 'video'|'audio', clipId }`。多轨需要 `{ trackId: string, clipId: string }`(track id 来自 `VideoTrack.ID` / `AudioTrack.ID`);跨 store 不复用 `Sel` 帮助函数,而是再写一份纯函数(避免类型反向污染 editor)。
+- **撤销栈快照形状**:`{ videoTracks: VideoTrack[], audioTracks: AudioTrack[] }` 全量深拷贝(每条 track 的 clips 单独 `.map(c => ({...c}))`,`Sources` 和 `AudioVolume` 不进入快照,与 editor 的 `ClipsSnapshot` 一致原则:撤销只回退时间轴,不回退资源库)。
+- **共享 `useTimelineDrag` 是否够用**:够。`getClips/setClips` 已是 `(trackId, clips[])` 化,`sourceMaxFor(clip, trackId)` 可由多轨 store 经 `clip.sourceId` 解析到 `Source.duration`。**新增**:跨轨拖动落点逻辑不在 `useTimelineDrag` 内(它只关心同 track 内重排);单独的 `useMultitrackOps.startCrossTrackReorder` 处理。
+- **跨轨拖动规则**:同 kind 之间允许(V→V / A→A);V→A 禁止(产品规则,UI 上 dropEffect 设 `none`);拖动过程中视觉上 clip 跟随光标,落地时:从原 track 移除 + 在目标 track 追加 + program 时间用落地点(同 trim/reorder 的对齐逻辑;若落到现有 clip 内部则按吸附点对齐)。
+- **删除轨道二次确认**:必须有(轨上若有 clip,确认对话框文案"将一并删除该轨上的 N 个 clip");空轨直接删。`window.confirm` 即可,不引入新模态。
+- **`Ctrl+L` 折叠素材库**:`store.libraryCollapsed`(默认 false);`useTimelinePlayback` 在多轨场景下挂一个键监听(改造其 `attach()` 接受 caller 提供的额外按键 → 动作映射,避免 hardcode;或多轨写自己的 keyboard composable,选择前者保持架构对称)。
+- **共享 composable 多轨复用方式**:与 editor 完全对称,`MultitrackView` 设置 `useTimelineZoom` / `useTimelineDrag` / `useTimelineRangeSelect` / `useTimelinePlayback` / `useUndoStack`,getter/setter 全部走 multitrack store。
+- **后端范围**:M7 主要是**前端**工作。后端只需要补 `multitrack/domain/timeline_test.go` 用多轨场景覆盖共享 timeline ops(确认 `Split` / `DeleteClip` / `Reorder` / `TrimLeft` / `TrimRight` 在 `[]Clip`(嵌入 + SourceID)上行为正确),以及补 `RemoveTrack` 纯函数 + 测试。
 
 ## 任务清单
 
@@ -22,89 +25,95 @@
 
 #### A.1 `multitrack/domain/`
 
-- [x] `clip.go`(新文件):新建 multitrack 专属 `Clip` struct,**嵌入** `common.Clip` 并加 `SourceID` 字段(JSON tag `sourceId`),靠 promoted field 让 `clip.SourceStart` / `clip.ProgramStart` 现有访问继续可用
-- [x] `project.go`:`VideoTrack.Clips` / `AudioTrack.Clips` 类型由 `[]common.Clip` 改为 `[]Clip`(本包的扩展型);所有现有引用同步更新
-- [x] `Validate()`:对每个 clip 校验 `SourceID != ""` 且能在 `Project.Sources` 中找到;视频轨上的 clip 必须指向 `Kind=video` 的 source,音频轨可指向任一 source
-- [x] `project_test.go`:补一个测例覆盖"clip 的 SourceID 不存在于 Sources" → expect 错误
-- [x] `sources.go` 新文件:`AddSource(p, src) (*Project, error)` / `RemoveSource(p, sid) (*Project, error)` 纯函数;`RemoveSource` 须先确认无 clip 引用
-- [x] `AddVideoTrack(p) / AddAudioTrack(p)` 返回新轨 id
-- [x] `domain` 测试覆盖以上纯函数(含"删除被引用的 source 应失败")
+- [ ] `tracks.go`(新文件,或加到 `sources.go`):`RemoveVideoTrack(p, id) (*Project, error)` / `RemoveAudioTrack(p, id) (*Project, error)` 纯函数,删 track + 该 track 上所有 clip;不依赖 source 引用计数(产品决定:删 track 不删 source)
+- [ ] `MoveClipAcrossTracks(p, fromKind, fromTrackID, toTrackID, clipID, newProgramStart) (*Project, error)`:同一 kind 内移动一个 clip;视频→音频(或反之)返回 error
+- [ ] `multitrack/domain/timeline_test.go`(新文件):
+  - 表驱动覆盖共享 ops 在 `[]multitrack.Clip` 上的行为(`Split` / `DeleteClip` / `Reorder` / `TrimLeft` / `TrimRight` 通过 `toCommonClips` 转换后调用,结果再写回 `[]Clip` 的方式)
+  - `RemoveTrack` 含 clip 的轨道
+  - `MoveClipAcrossTracks` 同 kind 成功 / 跨 kind 失败 / 落点 0 / 落点超出当前轨长度
+- [ ] `Validate` 在 `MoveClipAcrossTracks` 之后保持 invariant(SourceID 仍在 Sources 中、视频轨 clip 仍指向视频源、视频轨开头不可留空)
 
-#### A.2 `multitrack/api/`
+#### A.2 验证
 
-- [x] `dto.go`:加 `importSourcesRequest { Paths []string }` + `importSourcesResponse { Sources []Source, Project *Project, Errors [...] }`
-- [x] `handlers_sources.go`(新文件):
-  - `POST /api/multitrack/projects/:id/sources` body `{paths: [...]}`,逐个 ffprobe(走 `MediaProber`),写回项目 + 自动 `Save`,返回新增的 sources(部分失败仍返回 200,失败 path 进 `errors[]`)
-  - `DELETE /api/multitrack/projects/:id/sources/:sid`,先查无引用再删
-- [x] `handlers_source_serve.go`(新文件):`GET /api/multitrack/source?projectId=&sourceId=`,沿 `editor/api/handlers_source.go` 的 `http.ServeContent` 写法,根据项目 + sourceId 解析路径 → 流式服务(支持 Range)
-- [x] `routes.go`:挂上面 3 条路由;`/projects/` 通过 `handleProjectsTree` 分发给 `proj.getUpdateDelete` 或 `sources.dispatch`
-
-#### A.3 验证
-
-- [x] `go test ./multitrack/...` 全绿
-- [x] `CGO_ENABLED=0 go test ./...` 全绿
-- [x] `go build ./...` 通过
+- [ ] `go test ./multitrack/...` 全绿
+- [ ] `CGO_ENABLED=0 go test ./...` 全绿
+- [ ] `go build ./...` 通过
 
 ### B. 前端
 
-#### B.1 类型
+#### B.1 Store 扩展(`web/src/stores/multitrack.ts`)
 
-- [x] `web/src/api/multitrack.ts`:`MultitrackClip = TimelineClip & { sourceId: string }`,`MultitrackVideoTrack.clips` / `MultitrackAudioTrack.clips` 改类型;补 `importSources` / `removeSource` / `sourceUrl(projectId, sourceId)` 三个 API + `MultitrackImportResponse` 类型
+- [ ] 加状态:`selection: ClipSelection[]`(自定义类型 `{ trackId: string; clipId: string }`)+ `splitScope: SplitScope`(union `'all' | 'video' | 'audio' | { kind: 'track'; id: string }`)+ `rangeSelection: RangeSelection | null`(复用共享 `RangeSelection` 类型)+ `libraryCollapsed: boolean`
+- [ ] 接 `useUndoStack`:`snapshot()` 取 `videoTracks/audioTracks` 深拷贝,`apply(s)` 通过 `applyProjectPatch` 写回;暴露 `pushHistory / undo / redo / canUndo / canRedo`(同 editor.ts)
+- [ ] 选择 / 范围辅助:加纯函数 `selToggle / selReplace / selInTrack`(同 `Sel` 形状,但 trackId 替代 track kind)
+- [ ] `loadProject(p)` 重置 selection / splitScope / rangeSelection / playhead / 撤销栈(对齐 editor.ts `loadProject` 行为)
+- [ ] `removeVideoTrack(id) / removeAudioTrack(id)` action(走后端纯函数对应的 patch:本地直接重写 tracks 数组 + 调 `applyProjectPatch`,不需要新 API,后端 `PUT /:id` 已支持全量替换)
+- [ ] `moveClipAcrossTracks(fromTrackId, toTrackId, kind, clipId, newProgramStart)`:同 kind 间移动,本地纯计算 + `applyProjectPatch`
+- [ ] `playhead` 已在 M6 加;`splitScope` watch 用于 ops
 
-#### B.2 Store
+#### B.2 Ops composable(`web/src/composables/useMultitrackOps.ts` 新文件)
 
-- [x] `web/src/stores/multitrack.ts`:加 `importSources(paths) / removeSource(sid)` action;加 `addVideoTrack() / addAudioTrack() / appendClip(kind, trackId, clip)`;dirty 标记 + autosave 接通(已有);加 `topVideoActive(playhead)` / `audioActive(track, playhead)` getter,返回 `{ track, clip, source, srcTime } | null`
-- [x] M6 暂不引入 selection / range / undo — 这些 M7 再加;加 `playhead` + `playing` + `pxPerSecond` + `programDuration` computed
+参照 `useEditorOps`,但要支持四态 `splitScope`:
 
-#### B.3 组件
+- [ ] `tracksInScope(): Array<{ kind, id }>` 把 `'all'` 展开为所有视频轨 + 所有音频轨;`'video'` 展开为所有视频轨;`'audio'` 展开为所有音频轨;`{ kind: 'track', id }` 展开为单条
+- [ ] `splitAtPlayhead()`:遍历 `tracksInScope()`,对每条 track 的 clips 调 `splitTrack`(`@/utils/timeline`,可直接复用,因为它是按 `programStart/sourceStart/sourceEnd` 工作,与 sourceId 无关——但要确认新分裂出的 clip 复制 `sourceId` 字段);若 splitTrack 不复制扩展字段则需新增 `splitTrackMultitrack` 包装(读源 clip 的 sourceId 写到两个产物上)
+- [ ] `deleteSelection()`:范围选区优先(`carveRange` 同样需检查是否复制 sourceId);否则按 `selection` 删
+- [ ] 删除时同步清 `selection`、清 `rangeSelection`、`pushHistory()`
+- [ ] 暴露:`splitAtPlayhead / deleteSelection / addVideoTrack / addAudioTrack / removeTrack(kind, id)`(removeTrack 内部 confirm)
 
-- [x] `web/src/components/multitrack/MultitrackLibrary.vue`(新):左侧 240px 栏,顶部"导入"按钮 + 文件列表;空状态文案;Ctrl+L 折叠 M7 再加(本 M 不阻断)
-- [x] `web/src/components/multitrack/MultitrackLibraryItem.vue`(新):单 source 缩略卡,显示 kind 图标 + 文件名 + 时长 + 分辨率(视频);拖出 = 设 `dataTransfer` 携带 `application/x-easy-ffmpeg-source` JSON `{ sourceId }`(双击试听暂留 M7)
-- [x] `web/src/components/multitrack/MultitrackPreview.vue`(新):上半屏,1 `<video ref=videoRef muted>` + N `<audio>`(v-for over audioTracks);`useMultitrackPreview` 接管同步;多视频轨叠加时右上角"预览仅显示顶层视频轨"提示
-- [ ] `MultitrackTopBar.vue`:暂不抽,内联在 `MultitrackView.vue`(顶栏复杂度可控)
+> **疑似坑**:确认 `web/src/utils/timeline.ts` 的 `splitTrack` / `carveRange` 是否会保留输入 clip 上 `sourceId` 等多出字段。如果用 `{...c, sourceStart, sourceEnd}` 这种解构覆写则会保留;如果 hand-roll 新对象就不会。需要 grep + 必要时改为 `{...c, ...}` 模式或在多轨包装层补 sourceId。
 
-#### B.4 Composable
+#### B.3 跨轨拖动(扩展 `useTimelineDrag` 或新建 composable)
 
-- [x] `web/src/composables/useMultitrackPreview.ts`(新):
-  - 单 `<video>` 切源:`evaluate()` 调用 `topVideoActive`,变更则 `v.src = sourceUrl(...)` + `currentTime = srcTime`(`loadedmetadata` 后再次校正)
-  - 多 `<audio>` 同步:逐轨 `audioActive(track, t)`,设 src + currentTime + play/pause;muted 轨道直接暂停
-  - 每条音频轨独立 WebAudio GainNode(轨级 volume × 全局 audioVolume),回退到 `audio.volume` 上限 1.0
-  - GapClock 复用 `composables/timeline/useGapClock.ts`(全空 / 全 gap 时驱动 playhead)
+- [ ] 评估方案:
+  - **A**:扩展 `useTimelineDrag.startReorder` 增加可选 `findTargetTrack(ev)` 回调;落地时若返回的 trackId 与原 trackId 不同,执行跨轨移动(`getClips(from)` 删 + `getClips(to)` 加)。
+  - **B**:多轨独立 `useMultitrackOps.startCrossTrackReorder`,只在多轨视图上替换 `startReorder`;`useTimelineDrag` 不变。
+  - **决策**:走 **A**,把 `findTargetTrack` 做成 opts 字段(默认返回原 trackId 即同轨重排,与现状等价);避免分裂出两套相似 reorder 逻辑。
+- [ ] 视觉反馈:拖动时给跟随的"幽灵 clip"挂一个浅色覆盖块,跟光标移动(M7 简化:不做幽灵,直接动 store 里 clip 的 trackId,实时反映;若 UX 卡可加节流);跨 kind hover 时光标变成 `not-allowed`,落地拒绝
+- [ ] `MultitrackView` 把 `findTargetTrack` 实现为读 `ev.target` 找 `[data-multitrack-track-kind][data-multitrack-track-id]`(给每条 `TimelineTrackRow` 包裹层加这两个 data-* 属性)
 
-#### B.5 视图
+#### B.4 接入共享 composable(`MultitrackView.vue`)
 
-- [x] `web/src/views/MultitrackView.vue`:
-  - 替换 M5 中央占位,接入 `MultitrackLibrary` 左侧 + `MultitrackPreview` 上 + `TimelineRuler / TimelineTrackRow` v-for 多轨 + `PlayBar` 底
-  - 时间轴空白处接 `dragover/drop`,解析 `dataTransfer` → 调 `addVideoTrack/addAudioTrack` + `appendClip` 自动建轨
-  - 已有轨道接 `@dragover/@drop.stop`,落到该轨 + playhead 时间(M6 简化:精确落点 M7)
-  - 多视频轨叠加场景:`MultitrackPreview` 自带提示文案,本 M5 视图不重复
-- [x] 工具条:`+视频轨` / `+音频轨` / `关闭工程` 按钮内联在顶栏
+- [ ] `useTimelineZoom`(已在 editor 用)+ `useTimelineDrag`(getClips/setClips 走 store) + `useTimelineRangeSelect` + `useTimelinePlayback`(togglePlay / split / delete / undo / redo / Esc 清范围)+ `useUndoStack` 已经在 store
+- [ ] `useTimelinePlayback` 现签名:`{ togglePlay, splitAtPlayhead, deleteSelection, seekBackBoundary, seekForwardBoundary, undo, redo, clearRangeSelection }`。多轨需新增"折叠素材库"按键(Ctrl+L) → 评估扩展 `useTimelinePlayback` opts 还是另写。**决策**:`useTimelinePlayback` 加 `extraBindings?: Array<{ keys: string[]; ctrl?: boolean; action: () => void }>` 可选项;不破坏 editor 调用方
+- [ ] 选中态、范围选区、playhead 渲染按 `splitScope` 切换(全局 / 仅视频 / 仅音频 / 单条轨):
+  - `'all'`:整个时间轴一根 playhead(贯穿所有轨)
+  - `'video'`:playhead 只渲染在视频轨区
+  - `'audio'`:同理
+  - `{ kind: 'track', id }`:playhead 只渲染在那一条轨上(类似单视频 splitScope=video / audio 的小游标)
+- [ ] 工具条:删除选中 / 撤销 / 重做按钮(可选,键盘已可达;若加按钮就 `MultitrackToolbar.vue` 抽出,顶栏不堆)
+
+#### B.5 删除轨道 / 折叠素材库
+
+- [ ] 每条 `TimelineTrackRow` 的左侧 label 区加一个 "×" 按钮(hover 显示);点击 → `confirm(`删除"${track.label}"?其上 N 个 clip 将一并删除`)` → store.removeVideoTrack/removeAudioTrack
+- [ ] `MultitrackLibrary` 加 collapse 开关(顶栏一个箭头按钮 + Ctrl+L);折叠后只剩一条 32px 宽的 sidebar,导入按钮和列表全隐;再按 Ctrl+L 展开
 
 ### C. 验收
 
-- [x] `cd web && npx vue-tsc --noEmit` + `cd web && npm run build` 全绿
-- [x] `go build ./...` + `go test ./...` + `CGO_ENABLED=0 go test ./...` 全绿
-- [ ] **手测清单**(M6 终态,用户侧):
-  - [ ] 新建空多轨工程 → 进入工程
-  - [ ] 通过素材库导入 1 个有视频有音频的 mp4 → 看到 source 卡
-  - [ ] 把视频 source 拖到时间轴空白 → 自动建出 1 条视频轨 + 1 条音频轨,各 1 个 clip
-  - [ ] 再导入 1 个纯音频 mp3 → 拖到时间轴空白 → 多出 1 条音频轨
-  - [ ] 再导入 1 个不同分辨率的 mp4 → 拖到时间轴空白 → 多出 1 条视频轨 + 1 条音频轨,clip 落在 playhead 时间(或 0)
-  - [ ] 顶部预览能看到**顶层**视频轨命中的 source 帧;切源时无明显闪屏(允许 ~100ms 切换间隙黑屏)
-  - [ ] 三条音频轨混音可同时听到(以播放头为基准),全局 audioVolume 滑块影响所有轨,每条轨级 volume 独立工作
-  - [ ] 多视频轨叠加预览只显示顶层 + UI 提示可见
-  - [ ] 关闭工程 → 重开 → 时间轴恢复(JSON 保留 sources / clips)
-  - [ ] 切回单视频 Tab → 视觉与功能零回归(打开历史工程 / 撤销 / 导出能跑通)
-  - [ ] **两个 Tab 切换 store 不互相污染**
-- [ ] 收尾 commit:milestone M6 行 ✅ + commit hash + 完成日期 + 本 todo 整段清空
+- [ ] `cd web && npx vue-tsc --noEmit` + `cd web && npm run build` 全绿
+- [ ] `go build ./...` + `go test ./...` + `CGO_ENABLED=0 go test ./...` 全绿
+- [ ] **手测清单**(M7 终态,用户侧):
+  - [ ] 三视频轨各 1 个 clip(高/中/低层) → 顶层预览正确,Ctrl+Z 撤销 / Ctrl+Y 重做依次回溯三次添加
+  - [ ] 选中 clip(单击 / Shift 多选 / Ctrl 多选)→ Delete 删除;撤销恢复
+  - [ ] 范围选区(右键拖):跨多条轨道生效,Delete 删除范围,空白部分前后对接;撤销恢复
+  - [ ] 在播放头按 `S` 分割:`splitScope='all'` 时所有轨同时分;切到 `'video'` / `'audio'` / 单轨 后再分,只影响 scope
+  - [ ] clip 边缘拖拽 trim:左、右 handle 都能修剪,左 handle 同时调 programStart 让右沿不动;最大不超 source 时长
+  - [ ] clip 体拖动重排:同轨内吸附 0 / playhead / 其他 clip 边缘
+  - [ ] **跨轨拖动**:视频 clip 从 V1 拖到 V2 → 成功;同 clip 拖到 A1 → 拒绝(光标 not-allowed,落地无变化)
+  - [ ] 删除轨道:×按钮 → 二次确认 → 走;撤销恢复;空轨删除直接走
+  - [ ] Ctrl+L 折叠素材库 → 时间轴宽度变大;再按一次展开
+  - [ ] 自动保存:任意编辑 → 等 1.5s → 关闭工程 → 重开 → 状态恢复
+  - [ ] **单视频 Tab 视觉与功能零回归**(切到单视频 Tab,再过一遍 M4 §2.2.4 手测清单)
+  - [ ] **两个 Tab 切换 store 不互相污染**(在多轨 Tab 选中 clip,切到单视频 Tab,选中态不应渗漏)
+- [ ] 收尾 commit:milestone M7 行 ✅ + commit hash + 完成日期 + 本 todo 整段清空
 
 ## 阻塞 / 待澄清
 
-- (无)
+- (无)新出现的设计岔路在第二段"关键设计决定"已锁定;实现过程中发现新问题再补到这里
 
 ## 完工标准
 
-参见 milestones 文件 M6 行的"交付内容":
-> 后端:`POST /api/multitrack/projects/:id/sources` 多文件 ffprobe 写入(`mediaProberAdapter` 支持纯音频);前端:`MultitrackLibrary.vue` + `MultitrackLibraryItem.vue`(导入 / 双击试听 / 拖出);**拖入时间轴空白处自动建轨**(视频→V+A,音频→A);N 条轨道 v-for 渲染 + 垂直滚动;source 色条;预览走 M2 选定方案(单 `<video>` 切源 + 每条音频轨独立 `<audio>` + WebAudio gain);**多视频轨叠加预览仅顶层** + UI 提示
+参见 milestones 文件 M7 行的"交付内容":
+> split / delete / trim / 范围选区 / 重排 / 撤销重做在多轨模型上跑通(完全靠 M4 共享 composable + 多轨 store 实现);**跨轨拖动**(同类型轨之间;视频→音频禁止);splitScope 扩展到 `all/video/audio/track:<id>`;轨道删除二次确认;`multitrack/domain/timeline_test.go` 覆盖多轨场景;锁 `Ctrl+L` 折叠素材库
 
 **触发硬性条件**:全局不变量清单(milestones 文件顶部"全局不变量")每条都过。
