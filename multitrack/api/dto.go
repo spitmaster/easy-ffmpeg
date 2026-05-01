@@ -32,3 +32,14 @@ type importErrorItem struct {
 	Path  string `json:"path"`
 	Error string `json:"error"`
 }
+
+// exportRequest is the JSON body for POST /export. Mirrors the editor
+// shape — same overwrite-confirmation flow, same dryRun semantics — so
+// the frontend client and the modals/showOverwrite path stay uniform
+// across both editors.
+type exportRequest struct {
+	ProjectID string                 `json:"projectId"`
+	Export    *domain.ExportSettings `json:"export"`    // optional override; if nil, use project.Export
+	Overwrite bool                   `json:"overwrite"` // false + existing file → 409
+	DryRun    bool                   `json:"dryRun"`    // true → return the would-be command without running ffmpeg
+}

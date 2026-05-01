@@ -78,6 +78,16 @@ export const useMultitrackStore = defineStore('multitrack', () => {
   const rangeSelection = ref<RangeSelection | null>(null)
   const libraryCollapsed = ref(false)
 
+  /**
+   * True while a multitrack export is running. Drives the timeline lock:
+   * playback toggles, key shortcuts (Space / S / Delete / Ctrl+Z / …),
+   * clip drag, and drop accept paths all gate on this. The view flips it
+   * around the exportSubmit / closeExportSidebar lifecycle. Resets to
+   * false on every loadProject / closeProject so a stale lock can never
+   * persist across project switches.
+   */
+  const exportLocked = ref(false)
+
   function snapshotTracks(p: MultitrackProject): MultitrackSnapshot {
     return {
       videoTracks: p.videoTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
@@ -131,6 +141,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     playhead.value = 0
     playing.value = false
     libraryCollapsed.value = false
+    exportLocked.value = false
     dirty.value = false
     undoStack.reset(snapshotTracks(p))
   }
@@ -188,6 +199,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     playhead.value = 0
     playing.value = false
     libraryCollapsed.value = false
+    exportLocked.value = false
     autosave.cancel()
   }
 
@@ -424,6 +436,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     splitScope,
     rangeSelection,
     libraryCollapsed,
+    exportLocked,
     canUndo: undoStack.canUndo,
     canRedo: undoStack.canRedo,
     // derived

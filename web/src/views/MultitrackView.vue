@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, toRef, useTemplateRef, watch } from 'vue'
 import {
+  multitrackApi,
   SOURCE_VIDEO,
   type MultitrackClip,
+  type MultitrackExportBody,
+  type MultitrackExportStartResponse,
   type MultitrackSource,
 } from '@/api/multitrack'
-import type { ProjectsModalItem, RangeSelection, TrackData, TrackTone } from '@/types/timeline'
+import type { ExportSettings, ProjectsModalItem, RangeSelection, TrackData, TrackTone } from '@/types/timeline'
 import { useDirsStore } from '@/stores/dirs'
 import { useMultitrackStore, MultitrackSel } from '@/stores/multitrack'
 import { useModalsStore } from '@/stores/modals'
+import { useJobPanel } from '@/composables/useJobPanel'
 import { useMultitrackOps } from '@/composables/useMultitrackOps'
 import { useTimelineDrag } from '@/composables/timeline/useTimelineDrag'
 import { useTimelinePlayback } from '@/composables/timeline/useTimelinePlayback'
@@ -18,6 +22,8 @@ import { Path } from '@/utils/path'
 import MultitrackLibrary from '@/components/multitrack/MultitrackLibrary.vue'
 import MultitrackPreview from '@/components/multitrack/MultitrackPreview.vue'
 import MultitrackToolbar from '@/components/multitrack/MultitrackToolbar.vue'
+import ExportDialog from '@/components/timeline-shared/ExportDialog.vue'
+import ExportSidebar from '@/components/timeline-shared/ExportSidebar.vue'
 import PlayBar from '@/components/timeline-shared/PlayBar.vue'
 import ProjectsModal from '@/components/timeline-shared/ProjectsModal.vue'
 import TimelinePlayhead from '@/components/timeline-shared/TimelinePlayhead.vue'
@@ -49,7 +55,23 @@ const modals = useModalsStore()
 const ops = useMultitrackOps()
 
 const projectsOpen = ref(false)
+const exportOpen = ref(false)
+const exportSidebarOpen = ref(false)
 const importing = ref(false)
+
+/**
+ * Per-tab job state machine. Same shared composable the editor uses; the
+ * cancelUrl points at multitrack's endpoint but the underlying JobRunner
+ * is the global single-job manager — cancelling here also kills any
+ * editor / convert / audio job in flight.
+ */
+const job = useJobPanel({
+  cancelUrl: '/api/multitrack/export/cancel',
+  runningLabel: '导出中...',
+  doneLabel: '✓ 导出完成',
+  errorLabel: '✗ 导出失败',
+  cancelledLabel: '! 导出已取消',
+})
 const libraryRef = useTemplateRef<{ setError: (msg: string) => void }>('libraryRef')
 const previewRef = useTemplateRef<{ play: () => void; pause: () => void; toggle: () => void; seek: (t: number) => void }>('previewRef')
 const scrollEl = useTemplateRef<HTMLDivElement>('scrollEl')
@@ -216,7 +238,9 @@ const rangeSelect = useTimelineRangeSelect({
 })
 
 const playback = useTimelinePlayback({
-  isLocked: () => false, // M8 will gate on a multitrack export job
+  // Gate every shortcut on the export lock so Space / S / Delete /
+  // Ctrl+Z don't slip through while ffmpeg is running.
+  isLocked: () => store.exportLocked,
   togglePlay: () => previewRef.value?.toggle(),
   splitAtPlayhead: () => ops.splitAtPlayhead(),
   deleteSelection: () => ops.deleteSelection(),
@@ -309,6 +333,7 @@ function startScrubDrag(ev: MouseEvent) {
 }
 
 function onRulerMouseDown(ev: MouseEvent) {
+  if (store.exportLocked) return
   if (ev.button === 2) {
     rangeSelect.start(ev)
     return
@@ -333,6 +358,7 @@ function onTrackMouseDown(
 ) {
   const { ev, clipId, handle } = payload
   if (ev.button !== 0) return
+  if (store.exportLocked) return
   if (store.rangeSelection) store.rangeSelection = null
 
   if (!clipId) {
@@ -472,6 +498,12 @@ function findSource(sid: string): MultitrackSource | null {
 
 function onTimelineDragOver(ev: DragEvent) {
   if (!ev.dataTransfer) return
+  if (store.exportLocked) {
+    // Refuse drops outright while exporting — preventDefault is what tells
+    // the browser the target accepts the drop, so by skipping it the
+    // dragend reverts the source-card animation.
+    return
+  }
   if (Array.from(ev.dataTransfer.types).includes(SOURCE_MIME)) {
     ev.preventDefault()
     ev.dataTransfer.dropEffect = 'copy'
@@ -499,7 +531,7 @@ function makeClip(src: MultitrackSource, programStart: number): MultitrackClip {
  */
 function onTimelineDropEmpty(ev: DragEvent) {
   ev.preventDefault()
-  if (!store.project) return
+  if (!store.project || store.exportLocked) return
   const payload = readSourcePayload(ev)
   if (!payload) return
   const src = findSource(payload.sourceId)
@@ -520,13 +552,150 @@ function onTimelineDropEmpty(ev: DragEvent) {
 /** Drop onto a specific track row → append the clip at the playhead. */
 function onTrackDrop(ev: DragEvent, kind: 'video' | 'audio', trackId: string) {
   ev.preventDefault()
-  if (!store.project) return
+  if (!store.project || store.exportLocked) return
   const payload = readSourcePayload(ev)
   if (!payload) return
   const src = findSource(payload.sourceId)
   if (!src) return
   if (kind === 'video' && src.kind !== SOURCE_VIDEO) return
   store.appendClip(kind, trackId, makeClip(src, store.playhead))
+}
+
+// ---- Export ----
+
+/**
+ * Defaults for the export dialog. Mirrors the editor's pattern: pull the
+ * persisted ExportSettings from the project, falling back to system
+ * defaults + the saved output dir + the project name. Recomputed when the
+ * user reopens the dialog so a "save then reopen" cycle picks up edits.
+ */
+const exportDefaults = computed<ExportSettings>(() => {
+  const e = store.project?.export
+  return {
+    format: e?.format || 'mp4',
+    videoCodec: e?.videoCodec || 'h264',
+    audioCodec: e?.audioCodec || 'aac',
+    outputDir: e?.outputDir || dirs.outputDir || '',
+    outputName: e?.outputName || store.project?.name || 'multitrack',
+  }
+})
+
+/** "Project has at least one clip on at least one track" — mirrors the
+ * backend's "no clips" guard so the button can disable cleanly. */
+const hasAnyClip = computed(() => {
+  const p = store.project
+  if (!p) return false
+  for (const t of p.videoTracks) if (t.clips.length) return true
+  for (const t of p.audioTracks) if (t.clips.length) return true
+  return false
+})
+
+const exportDisabled = computed(
+  () => !hasProject.value || !hasAnyClip.value || store.exportLocked,
+)
+
+async function pickOutputDir(current: string): Promise<string | null> {
+  const p = await modals.showPicker({
+    mode: 'dir',
+    title: '选择输出目录',
+    startPath: current || dirs.outputDir,
+  })
+  if (!p) return null
+  await dirs.saveOutput(p)
+  return p
+}
+
+async function onExportSubmit(settings: ExportSettings) {
+  const project = store.project
+  if (!project) return
+  if (!hasAnyClip.value) {
+    alert('时间轴为空，无法导出')
+    return
+  }
+  // Frontend-side leading-gap pre-check so the user doesn't have to wait
+  // for the dryRun roundtrip to learn they're offending. Backend re-checks.
+  for (let i = 0; i < project.videoTracks.length; i++) {
+    const clips = project.videoTracks[i].clips
+    if (!clips.length) continue
+    const earliest = clips.reduce((m, c) => Math.min(m, c.programStart), Infinity)
+    if (earliest > 0.001) {
+      alert(`视频轨 ${i + 1} 开头必须有内容：第一个 clip 从 ${earliest.toFixed(2)}s 开始。\n请把它拖到 0 秒再导出。`)
+      return
+    }
+  }
+
+  await store.flushSave()
+  const body: MultitrackExportBody = { projectId: project.id, export: settings }
+
+  let dryRun: { command: string; outputPath: string }
+  try {
+    dryRun = await multitrackApi.exportPreview(body)
+  } catch (e) {
+    alert('生成命令失败: ' + (e instanceof Error ? e.message : String(e)))
+    return
+  }
+  if (!(await modals.showCommand(dryRun.command))) return
+
+  exportOpen.value = false
+  exportSidebarOpen.value = true
+  store.exportLocked = true
+
+  // Stop preview before the encoder starts: the in-page video/audio
+  // decoders compete with ffmpeg for CPU and disk I/O on the same source
+  // files (multiple sources, especially), and there's no value in keeping
+  // playback alive during a real export.
+  previewRef.value?.pause()
+
+  const sendStart = async (overwrite: boolean): Promise<string> => {
+    const { res, data } = await multitrackApi.startExport({ ...body, overwrite })
+    const payload = data as MultitrackExportStartResponse
+    if (res.status === 409 && payload.existing) {
+      const ok = await modals.showOverwrite(payload.path || '')
+      if (!ok) throw new Error('已取消覆盖')
+      return sendStart(true)
+    }
+    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`)
+    return payload.command || ''
+  }
+
+  try {
+    await job.startJob({
+      outputPath:
+        dryRun.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
+      totalDurationSec: store.programDuration,
+      request: () => sendStart(false),
+    })
+  } catch {
+    // job.startJob surfaces the error in its own panel; release the lock
+    // immediately so the user can fix and retry without a stale gate.
+    store.exportLocked = false
+  }
+}
+
+/**
+ * job.running flips back to false on success / error / cancel; sync the
+ * store flag so the UI unlocks the moment ffmpeg is done. Watching the
+ * running ref is cheaper than wiring an onFinish callback through every
+ * job.startJob call and matches the editor's implicit unlock behavior.
+ */
+watch(
+  () => job.running.value,
+  (v) => {
+    if (!v) store.exportLocked = false
+  },
+)
+
+async function closeExportSidebar() {
+  if (job.running.value) {
+    if (!confirm('导出仍在进行中，关闭面板将取消导出。确认关闭？')) return
+    try {
+      await multitrackApi.cancelExport()
+    } catch {
+      // server may already be tearing down — fine to swallow.
+    }
+  }
+  exportSidebarOpen.value = false
+  store.exportLocked = false
 }
 
 // ---- Lifecycle ----
@@ -571,11 +740,13 @@ watch(
       <template v-if="hasProject">
         <span class="mx-2 h-4 w-px bg-border-base"></span>
         <button
-          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated"
+          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated disabled:opacity-50"
+          :disabled="store.exportLocked"
           @click="onAddVideoTrack"
         >+ 视频轨</button>
         <button
-          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated"
+          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated disabled:opacity-50"
+          :disabled="store.exportLocked"
           @click="onAddAudioTrack"
         >+ 音频轨</button>
         <span class="mx-2 h-4 w-px bg-border-base"></span>
@@ -585,7 +756,13 @@ watch(
           @click="store.libraryCollapsed = !store.libraryCollapsed"
         >{{ store.libraryCollapsed ? '展开素材库' : '收起素材库' }}</button>
         <button
-          class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-bg-elevated hover:text-fg-base"
+          class="rounded bg-accent px-3 py-1 text-xs text-bg-base hover:bg-accent-hover disabled:opacity-50"
+          :disabled="exportDisabled"
+          @click="exportOpen = true"
+        >导出</button>
+        <button
+          class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-bg-elevated hover:text-fg-base disabled:opacity-50"
+          :disabled="store.exportLocked"
           @click="onClose"
         >关闭工程</button>
       </template>
@@ -694,8 +871,9 @@ watch(
                 >
                   <span class="truncate">🎬 {{ t.label }}</span>
                   <button
-                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger group-hover:opacity-100"
+                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger disabled:cursor-not-allowed group-hover:opacity-100"
                     title="删除该轨道"
+                    :disabled="store.exportLocked"
                     @click.stop="onRemoveTrack('video', t.id)"
                   >×</button>
                 </div>
@@ -706,8 +884,9 @@ watch(
                 >
                   <span class="truncate">🔊 {{ t.label }}</span>
                   <button
-                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger group-hover:opacity-100"
+                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger disabled:cursor-not-allowed group-hover:opacity-100"
                     title="删除该轨道"
+                    :disabled="store.exportLocked"
                     @click.stop="onRemoveTrack('audio', t.id)"
                   >×</button>
                 </div>
@@ -811,6 +990,26 @@ watch(
 
         <MultitrackToolbar />
       </div>
+
+      <!-- Right: export log sidebar (visible only during/after export). The
+           ExportSidebar component lays itself out as an inset column —
+           same as the editor — so we drop it as a sibling of the main
+           column rather than overlaying. -->
+      <ExportSidebar
+        :open="exportSidebarOpen"
+        :running="job.running.value"
+        :state-label="job.stateLabel.value"
+        :log="job.log.value"
+        :progress="job.progress.value"
+        :progress-visible="job.progressVisible.value"
+        :finish-visible="job.finishVisible.value"
+        :finish-kind="job.finishKind.value"
+        :finish-text="job.finishText.value"
+        :has-output-path="!!job.lastOutputPath.value"
+        @close="closeExportSidebar"
+        @cancel="job.cancel"
+        @reveal="job.revealOutput"
+      />
     </div>
 
     <ProjectsModal
@@ -821,6 +1020,15 @@ watch(
       :empty-text='`暂无多轨工程,点上方"新建工程"创建`'
       @close="projectsOpen = false"
       @load="onLoad"
+    />
+
+    <ExportDialog
+      :open="exportOpen"
+      :defaults="exportDefaults"
+      :pick-dir="pickOutputDir"
+      title="导出多轨工程"
+      @close="exportOpen = false"
+      @submit="onExportSubmit"
     />
   </section>
 </template>

@@ -1,5 +1,5 @@
 import type { Clip as TimelineClip, ExportSettings } from '@/types/timeline'
-import { fetchJson, getJson, postJson } from './client'
+import { fetchJson, getJson, postJson, postJsonRaw } from './client'
 
 /**
  * Multitrack editor wire types — mirror easy-ffmpeg/multitrack/domain on
@@ -86,6 +86,30 @@ export interface MultitrackImportResponse {
   errors?: MultitrackImportError[]
 }
 
+/**
+ * POST /api/multitrack/export body. Mirrors editor.ExportBody so the
+ * frontend's modals.showOverwrite + dryRun flow can be wrapped uniformly.
+ */
+export interface MultitrackExportBody {
+  projectId: string
+  export?: ExportSettings
+  overwrite?: boolean
+  dryRun?: boolean
+}
+
+/**
+ * Shape of the start/dryRun response. Errors and the 409-overwrite reply
+ * share keys so the same union type covers all branches the frontend
+ * needs to inspect.
+ */
+export interface MultitrackExportStartResponse {
+  command?: string
+  outputPath?: string
+  existing?: boolean
+  path?: string
+  error?: string
+}
+
 export const multitrackApi = {
   listProjects: () =>
     getJson<MultitrackProjectSummary[]>('/api/multitrack/projects'),
@@ -127,5 +151,35 @@ export const multitrackApi = {
   sourceUrl: (projectId: string, sourceId: string) =>
     `/api/multitrack/source?projectId=${encodeURIComponent(projectId)}&sourceId=${encodeURIComponent(sourceId)}`,
 
-  // M8+: exportPreview, startExport, cancelExport
+  /**
+   * Dry-run an export: returns the would-be ffmpeg command and resolved
+   * output path without launching the encoder or checking for an
+   * existing file. The frontend surfaces this in modals.showCommand
+   * before committing to the real run.
+   */
+  exportPreview: async (
+    body: MultitrackExportBody,
+  ): Promise<{ command: string; outputPath: string }> => {
+    const data = await postJson<MultitrackExportStartResponse>(
+      '/api/multitrack/export',
+      { ...body, dryRun: true },
+    )
+    return { command: data.command || '', outputPath: data.outputPath || '' }
+  },
+
+  /**
+   * Start a real export. postJsonRaw so the caller can see HTTP 409 with
+   * `existing: true` and prompt the user before re-submitting with
+   * `overwrite: true`. Same shape as editor.startExport.
+   */
+  startExport: (body: MultitrackExportBody) =>
+    postJsonRaw('/api/multitrack/export', body),
+
+  /**
+   * Best-effort cancel. The job runner is the global single-job runner
+   * shared with editor / convert / audio, so a cancel here also kills any
+   * other currently-running job — but the global single-job invariant
+   * means there can't be more than one anyway.
+   */
+  cancelExport: () => postJson<void>('/api/multitrack/export/cancel'),
 }

@@ -28,6 +28,7 @@ type Router struct {
 	proj    *ProjectHandlers
 	sources *SourceHandlers
 	serve   *SourceServeHandlers
+	export  *ExportHandlers
 }
 
 func NewRouter(cfg Config) *Router {
@@ -43,14 +44,15 @@ func (r *Router) Register(mux *http.ServeMux, prefix string) {
 	r.proj = NewProjectHandlers(r.cfg.Repo, r.cfg.Clock, prefix)
 	r.sources = NewSourceHandlers(r.cfg.Repo, r.cfg.Prober, r.cfg.Clock, prefix)
 	r.serve = NewSourceServeHandlers(r.cfg.Repo)
+	r.export = NewExportHandlers(r.cfg.Repo, r.cfg.Runner, r.cfg.Paths)
 
 	mux.HandleFunc(prefix+"/projects", r.proj.listOrCreate)
 	// /projects/ catches both project CRUD (/:id) and source CRUD
 	// (/:id/sources, /:id/sources/:sid). handleProjectsTree picks one.
 	mux.HandleFunc(prefix+"/projects/", r.handleProjectsTree)
 	mux.HandleFunc(prefix+"/source", r.serve.serve)
-	// M8+ routes:
-	//   POST /export, POST /export/cancel
+	mux.HandleFunc(prefix+"/export", r.export.start)
+	mux.HandleFunc(prefix+"/export/cancel", r.export.cancel)
 }
 
 // handleProjectsTree disambiguates between project-id and source-tree URLs
