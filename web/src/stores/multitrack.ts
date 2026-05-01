@@ -10,19 +10,19 @@ import {
   type MultitrackSource,
   type MultitrackVideoTrack,
 } from '@/api/multitrack'
+import type { RangeSelection } from '@/types/timeline'
 import { useAutosave } from '@/composables/timeline/useAutosave'
+import { useUndoStack } from '@/composables/timeline/useUndoStack'
 
 /**
  * Multitrack store. Holds the open project, the project list (lazy for
- * the picker modal), preview state (playhead / playing), and timeline
- * presentation (pxPerSecond). Editing actions (split / delete / undo)
- * land in M7; M6 only needs to seed clips when sources are dropped onto
- * the timeline.
+ * the picker modal), preview state (playhead / playing), timeline
+ * presentation (pxPerSecond), and editing state (selection, split scope,
+ * range selection, library-collapsed flag).
  *
- * Like editor.ts the store is a single source of truth for the UI; every
- * mutation goes through applyProjectPatch so dirty + autosave fire
- * uniformly. SourceID validation lives on the backend (Project.Validate);
- * the frontend trusts whatever the server accepts.
+ * The shape mirrors stores/editor.ts so the shared composables (useUndoStack,
+ * useTimelineDrag, useTimelineRangeSelect, useTimelinePlayback) can drive
+ * either store interchangeably.
  */
 
 export interface MultitrackTopVideoActive {
@@ -31,6 +31,34 @@ export interface MultitrackTopVideoActive {
   source: MultitrackSource
   /** Time inside the source corresponding to playhead. */
   srcTime: number
+}
+
+/** Per-track-and-clip selection — track id (not kind) so two tracks of the
+ * same kind don't collide. */
+export interface MultitrackClipSelection {
+  trackId: string
+  clipId: string
+}
+
+/**
+ * Split scope semantics:
+ *   'all'         every track
+ *   'video'       all video tracks
+ *   'audio'       all audio tracks
+ *   { kind, id }  one specific track
+ */
+export type MultitrackSplitScope =
+  | 'all'
+  | 'video'
+  | 'audio'
+  | { kind: 'track'; id: string }
+
+/** Snapshot of the editable timeline state for the undo stack. Sources +
+ * AudioVolume are intentionally excluded — undo only retracts edits, not
+ * library or mix changes (matches editor.ts ClipsSnapshot). */
+export interface MultitrackSnapshot {
+  videoTracks: MultitrackVideoTrack[]
+  audioTracks: MultitrackAudioTrack[]
 }
 
 export const useMultitrackStore = defineStore('multitrack', () => {
@@ -43,6 +71,29 @@ export const useMultitrackStore = defineStore('multitrack', () => {
   const playhead = ref(0)
   const playing = ref(false)
   const pxPerSecond = ref(8)
+
+  // M7 editing state.
+  const selection = ref<MultitrackClipSelection[]>([])
+  const splitScope = ref<MultitrackSplitScope>('all')
+  const rangeSelection = ref<RangeSelection | null>(null)
+  const libraryCollapsed = ref(false)
+
+  function snapshotTracks(p: MultitrackProject): MultitrackSnapshot {
+    return {
+      videoTracks: p.videoTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
+      audioTracks: p.audioTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
+    }
+  }
+
+  const undoStack = useUndoStack<MultitrackSnapshot>({
+    snapshot: () => snapshotTracks(project.value!),
+    apply: (s) => {
+      applyProjectPatch({
+        videoTracks: s.videoTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
+        audioTracks: s.audioTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
+      })
+    },
+  })
 
   const autosave = useAutosave({
     isDirty: () => dirty.value,
@@ -69,6 +120,21 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     if (markDirty) autosave.schedule()
   }
 
+  /** Single entry point that any open/create/openProject path can use to
+   * reset the transient editing state and the undo stack. Mirrors
+   * editor.ts loadProject. */
+  function loadProject(p: MultitrackProject) {
+    project.value = p
+    selection.value = []
+    splitScope.value = 'all'
+    rangeSelection.value = null
+    playhead.value = 0
+    playing.value = false
+    libraryCollapsed.value = false
+    dirty.value = false
+    undoStack.reset(snapshotTracks(p))
+  }
+
   async function fetchList(): Promise<MultitrackProjectSummary[]> {
     loading.value = true
     error.value = ''
@@ -86,10 +152,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
   async function createNew(name?: string): Promise<MultitrackProject> {
     const trimmed = (name ?? '').trim() || undefined
     const created = await multitrackApi.createProject(trimmed)
-    project.value = created
-    playhead.value = 0
-    playing.value = false
-    dirty.value = false
+    loadProject(created)
     list.value = [
       { id: created.id, name: created.name, sourceCount: 0, createdAt: created.createdAt, updatedAt: created.updatedAt },
       ...list.value.filter((p) => p.id !== created.id),
@@ -99,10 +162,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
 
   async function openProject(id: string): Promise<MultitrackProject> {
     const p = await multitrackApi.getProject(id)
-    project.value = p
-    playhead.value = 0
-    playing.value = false
-    dirty.value = false
+    loadProject(p)
     return p
   }
 
@@ -111,6 +171,8 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     list.value = list.value.filter((p) => p.id !== id)
     if (project.value?.id === id) {
       project.value = null
+      selection.value = []
+      rangeSelection.value = null
       playhead.value = 0
       playing.value = false
       dirty.value = false
@@ -119,16 +181,21 @@ export const useMultitrackStore = defineStore('multitrack', () => {
 
   function closeProject() {
     project.value = null
+    selection.value = []
+    rangeSelection.value = null
+    splitScope.value = 'all'
     dirty.value = false
     playhead.value = 0
     playing.value = false
+    libraryCollapsed.value = false
     autosave.cancel()
   }
 
   /**
    * Probe + add the given file paths as sources. The backend persists the
    * mutation server-side and returns the updated project; we replace
-   * local state in one shot.
+   * local state in one shot. History snapshot is pushed so the user can
+   * undo a wrong import.
    */
   async function importSources(
     paths: string[],
@@ -156,6 +223,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     const id = nextTrackId('v', project.value.videoTracks.map((t) => t.id))
     const track: MultitrackVideoTrack = { id, clips: [] }
     applyProjectPatch({ videoTracks: [...project.value.videoTracks, track] })
+    undoStack.push()
     return id
   }
 
@@ -164,7 +232,96 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     const id = nextTrackId('a', project.value.audioTracks.map((t) => t.id))
     const track: MultitrackAudioTrack = { id, volume: 1, clips: [] }
     applyProjectPatch({ audioTracks: [...project.value.audioTracks, track] })
+    undoStack.push()
     return id
+  }
+
+  /**
+   * Remove a video track and all its clips. Sources referenced by removed
+   * clips are not auto-removed — the user purges them via the library
+   * "remove source" button (which does its own ref-count check).
+   */
+  function removeVideoTrack(id: string) {
+    if (!project.value) return
+    const next = project.value.videoTracks.filter((t) => t.id !== id)
+    if (next.length === project.value.videoTracks.length) return
+    applyProjectPatch({ videoTracks: next })
+    selection.value = selection.value.filter((s) => s.trackId !== id)
+    if (typeof splitScope.value === 'object' && splitScope.value.id === id) {
+      splitScope.value = 'all'
+    }
+    undoStack.push()
+  }
+
+  function removeAudioTrack(id: string) {
+    if (!project.value) return
+    const next = project.value.audioTracks.filter((t) => t.id !== id)
+    if (next.length === project.value.audioTracks.length) return
+    applyProjectPatch({ audioTracks: next })
+    selection.value = selection.value.filter((s) => s.trackId !== id)
+    if (typeof splitScope.value === 'object' && splitScope.value.id === id) {
+      splitScope.value = 'all'
+    }
+    undoStack.push()
+  }
+
+  /**
+   * Move a clip from one track to another, both of the given kind. Cross-
+   * kind moves (video → audio or vice versa) are silently rejected — the
+   * UI prevents them via dropEffect, but the action is double-checked
+   * here so a stale drop can never corrupt the model.
+   */
+  function moveClipAcrossTracks(
+    kind: 'video' | 'audio',
+    fromTrackId: string,
+    toTrackId: string,
+    clipId: string,
+    newProgramStart: number,
+  ) {
+    if (!project.value) return
+    const clamped = Math.max(0, newProgramStart)
+    if (kind === 'video') {
+      const tracks = project.value.videoTracks
+      const fromIdx = tracks.findIndex((t) => t.id === fromTrackId)
+      const toIdx = tracks.findIndex((t) => t.id === toTrackId)
+      if (fromIdx < 0 || toIdx < 0) return
+      const from = tracks[fromIdx]
+      const clipIdx = from.clips.findIndex((c) => c.id === clipId)
+      if (clipIdx < 0) return
+      const moving: MultitrackClip = { ...from.clips[clipIdx], programStart: clamped }
+      const next = tracks.slice()
+      const newFromClips = from.clips.slice()
+      newFromClips.splice(clipIdx, 1)
+      next[fromIdx] = { ...from, clips: newFromClips }
+      // Re-read dest from the updated array so same-track moves still
+      // see the shortened source.
+      const to = next[toIdx]
+      next[toIdx] = { ...to, clips: [...to.clips, moving] }
+      applyProjectPatch({ videoTracks: next })
+    } else {
+      const tracks = project.value.audioTracks
+      const fromIdx = tracks.findIndex((t) => t.id === fromTrackId)
+      const toIdx = tracks.findIndex((t) => t.id === toTrackId)
+      if (fromIdx < 0 || toIdx < 0) return
+      const from = tracks[fromIdx]
+      const clipIdx = from.clips.findIndex((c) => c.id === clipId)
+      if (clipIdx < 0) return
+      const moving: MultitrackClip = { ...from.clips[clipIdx], programStart: clamped }
+      const next = tracks.slice()
+      const newFromClips = from.clips.slice()
+      newFromClips.splice(clipIdx, 1)
+      next[fromIdx] = { ...from, clips: newFromClips }
+      const to = next[toIdx]
+      next[toIdx] = { ...to, clips: [...to.clips, moving] }
+      applyProjectPatch({ audioTracks: next })
+    }
+    // Selection follows the clip to its new track id.
+    selection.value = selection.value.map((s) =>
+      s.clipId === clipId && s.trackId === fromTrackId ? { trackId: toTrackId, clipId } : s,
+    )
+    // History is the caller's responsibility — drag-and-drop pushes on
+    // mouseup so a single drag (which may flip tracks) is one history
+    // entry, not two.
   }
 
   /**
@@ -184,6 +341,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
       )
       applyProjectPatch({ audioTracks: tracks })
     }
+    undoStack.push()
   }
 
   // ---- Derived ----
@@ -262,6 +420,12 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     playhead,
     playing,
     pxPerSecond,
+    selection,
+    splitScope,
+    rangeSelection,
+    libraryCollapsed,
+    canUndo: undoStack.canUndo,
+    canRedo: undoStack.canRedo,
     // derived
     programDuration,
     sourcesById,
@@ -271,13 +435,20 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     openProject,
     deleteProject,
     closeProject,
+    loadProject,
     importSources,
     removeSource,
     addVideoTrack,
     addAudioTrack,
+    removeVideoTrack,
+    removeAudioTrack,
+    moveClipAcrossTracks,
     appendClip,
     applyProjectPatch,
     replaceProject,
+    pushHistory: undoStack.push,
+    undo: undoStack.undo,
+    redo: undoStack.redo,
     topVideoActive,
     audioActive,
     flushSave: autosave.flush,
@@ -302,4 +473,31 @@ function clipAt(clips: MultitrackClip[], t: number): MultitrackClip | null {
     if (t + 1e-6 >= start && t < end - 1e-6) return c
   }
   return null
+}
+
+// ---- Selection helpers (pure; not stored on the store) ----
+
+export const MultitrackSel = {
+  has(sel: MultitrackClipSelection[], trackId: string, clipId: string): boolean {
+    return sel.some((s) => s.trackId === trackId && s.clipId === clipId)
+  },
+  toggle(
+    sel: MultitrackClipSelection[],
+    trackId: string,
+    clipId: string,
+  ): MultitrackClipSelection[] {
+    const i = sel.findIndex((s) => s.trackId === trackId && s.clipId === clipId)
+    if (i >= 0) {
+      const out = sel.slice()
+      out.splice(i, 1)
+      return out
+    }
+    return sel.concat([{ trackId, clipId }])
+  },
+  replace(trackId: string, clipId: string): MultitrackClipSelection[] {
+    return [{ trackId, clipId }]
+  },
+  inTrack(sel: MultitrackClipSelection[], trackId: string): string[] {
+    return sel.filter((s) => s.trackId === trackId).map((s) => s.clipId)
+  },
 }

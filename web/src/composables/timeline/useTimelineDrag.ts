@@ -18,6 +18,13 @@ import type { Clip } from '@/types/timeline'
  * 0, the current playhead, and any other clip's program start/end on the
  * same track. The snap distance is `snapPx` in px (default 8), translated
  * to seconds via the current pxPerSecond.
+ *
+ * Cross-track reorder (multitrack) is gated on two optional callbacks:
+ *   - `findTargetTrack(ev)` — returns the track id the cursor is over
+ *     (or null when over a non-droppable area / different-kind track);
+ *   - `onCrossTrack(from, to, clipId, programStart)` — commits the move
+ *     in the store. When both are provided and a move is accepted, the
+ *     drag continues against the new track (snap points recomputed).
  */
 export interface TimelineDragOptions<C extends Clip = Clip> {
   pxPerSecond: () => number
@@ -36,6 +43,19 @@ export interface TimelineDragOptions<C extends Clip = Clip> {
   snapPx?: number
   /** Minimum clip length in seconds. Defaults to 0.05. */
   minClipSec?: number
+  /** Cross-track drag: identify the track id under the cursor. Return null
+   * to keep the clip on its current track (e.g. cursor over a different-
+   * kind track that should reject the drop). */
+  findTargetTrack?: (ev: MouseEvent) => string | null
+  /** Cross-track drag: commit the move. Should remove the clip from
+   * `from` and append it to `to` at `newProgramStart`. Return true to
+   * accept the move; false rejects it and the drag continues on `from`. */
+  onCrossTrack?: (
+    fromTrackId: string,
+    toTrackId: string,
+    clipId: string,
+    newProgramStart: number,
+  ) => boolean
 }
 
 const DEFAULT_SNAP_PX = 8
@@ -83,20 +103,29 @@ export function useTimelineDrag<C extends Clip = Clip>(opts: TimelineDragOptions
 
   function startReorder(ev: MouseEvent, trackId: string, clipId: string) {
     ev.preventDefault()
-    const original = opts.getClips(trackId).map((c) => ({ ...c }))
-    const idx = original.findIndex((c) => c.id === clipId)
-    if (idx < 0) return
     const ppS = opts.pxPerSecond()
-    const startX = ev.clientX
-    const origProgramStart = original[idx].programStart
-    const dur = original[idx].sourceEnd - original[idx].sourceStart
 
-    const snapPoints: number[] = [0, opts.playhead()]
-    original.forEach((c, i) => {
-      if (i === idx) return
-      snapPoints.push(c.programStart)
-      snapPoints.push(c.programStart + (c.sourceEnd - c.sourceStart))
-    })
+    // Mutable drag state — gets replaced after a successful cross-track move.
+    let currentTrackId = trackId
+    let original = opts.getClips(currentTrackId).map((c) => ({ ...c }))
+    let idx = original.findIndex((c) => c.id === clipId)
+    if (idx < 0) return
+    let origProgramStart = original[idx].programStart
+    const dur = original[idx].sourceEnd - original[idx].sourceStart
+    let baseX = ev.clientX
+    let snapPoints = computeSnapPoints()
+    const initialProgramStart = origProgramStart
+    const initialTrackId = trackId
+
+    function computeSnapPoints(): number[] {
+      const pts: number[] = [0, opts.playhead()]
+      original.forEach((c, i) => {
+        if (i === idx) return
+        pts.push(c.programStart)
+        pts.push(c.programStart + (c.sourceEnd - c.sourceStart))
+      })
+      return pts
+    }
 
     function snapToNearest(candidateStart: number): number {
       const candidateEnd = candidateStart + dur
@@ -119,18 +148,46 @@ export function useTimelineDrag<C extends Clip = Clip>(opts: TimelineDragOptions
     }
 
     function onMove(e: MouseEvent) {
-      const dx = e.clientX - startX
+      const dx = e.clientX - baseX
       const raw = Math.max(0, origProgramStart + dx / ppS)
       const snapped = snapToNearest(raw)
+
+      // Cross-track move attempt — only when both callbacks are wired and
+      // the cursor identifies a *different* track.
+      if (opts.findTargetTrack && opts.onCrossTrack) {
+        const target = opts.findTargetTrack(e)
+        if (target && target !== currentTrackId) {
+          const accepted = opts.onCrossTrack(currentTrackId, target, clipId, snapped)
+          if (accepted) {
+            // Re-baseline the drag against the new track. The store has
+            // already moved the clip; reload our cached `original` so
+            // future setClips writes target the destination track.
+            currentTrackId = target
+            original = opts.getClips(currentTrackId).map((c) => ({ ...c }))
+            idx = original.findIndex((c) => c.id === clipId)
+            if (idx < 0) return
+            origProgramStart = snapped
+            baseX = e.clientX
+            snapPoints = computeSnapPoints()
+            return
+          }
+        }
+      }
+
       const clips = original.map((c) => ({ ...c }))
-      clips[idx].programStart = snapped
-      opts.setClips(trackId, clips)
+      if (idx >= 0 && idx < clips.length) {
+        clips[idx].programStart = snapped
+        opts.setClips(currentTrackId, clips)
+      }
     }
     function onUp() {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
-      const finalClip = opts.getClips(trackId).find((c) => c.id === clipId)
-      if (finalClip && Math.abs(finalClip.programStart - origProgramStart) > 1e-6) {
+      const finalClip = opts.getClips(currentTrackId).find((c) => c.id === clipId)
+      const moved =
+        currentTrackId !== initialTrackId ||
+        (finalClip && Math.abs(finalClip.programStart - initialProgramStart) > 1e-6)
+      if (moved) {
         opts.pushHistory()
       }
       opts.scheduleSave()

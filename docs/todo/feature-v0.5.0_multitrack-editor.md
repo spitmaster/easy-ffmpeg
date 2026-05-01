@@ -25,73 +25,66 @@
 
 #### A.1 `multitrack/domain/`
 
-- [ ] `tracks.go`(新文件,或加到 `sources.go`):`RemoveVideoTrack(p, id) (*Project, error)` / `RemoveAudioTrack(p, id) (*Project, error)` 纯函数,删 track + 该 track 上所有 clip;不依赖 source 引用计数(产品决定:删 track 不删 source)
-- [ ] `MoveClipAcrossTracks(p, fromKind, fromTrackID, toTrackID, clipID, newProgramStart) (*Project, error)`:同一 kind 内移动一个 clip;视频→音频(或反之)返回 error
-- [ ] `multitrack/domain/timeline_test.go`(新文件):
-  - 表驱动覆盖共享 ops 在 `[]multitrack.Clip` 上的行为(`Split` / `DeleteClip` / `Reorder` / `TrimLeft` / `TrimRight` 通过 `toCommonClips` 转换后调用,结果再写回 `[]Clip` 的方式)
-  - `RemoveTrack` 含 clip 的轨道
-  - `MoveClipAcrossTracks` 同 kind 成功 / 跨 kind 失败 / 落点 0 / 落点超出当前轨长度
-- [ ] `Validate` 在 `MoveClipAcrossTracks` 之后保持 invariant(SourceID 仍在 Sources 中、视频轨 clip 仍指向视频源、视频轨开头不可留空)
+- [x] `tracks.go`(新文件):`RemoveVideoTrack(p, id) (*Project, error)` / `RemoveAudioTrack(p, id) (*Project, error)` 纯函数,删 track + 该 track 上所有 clip;不依赖 source 引用计数(产品决定:删 track 不删 source)
+- [x] `MoveClipAcrossTracks(p, kind, fromTrackID, toTrackID, clipID, newProgramStart) (*Project, error)`:同一 kind 内移动一个 clip;跨 kind 返回 `ErrCrossKindMove`
+- [x] `multitrack/domain/timeline_test.go`(新文件):
+  - 共享 ops 在多轨 `[]Clip` 上经 `applyOnTrack` 包装跑一遍,断言 SourceID 不丢(`Split` / `DeleteClip` / `Reorder` / `TrimLeft` / `TrimRight` 都覆盖)
+  - `RemoveVideoTrack` / `RemoveAudioTrack` 含 clip 删除 + ErrTrackNotFound
+  - `MoveClipAcrossTracks` 同 kind 成功 / 同轨重排(programStart 更新) / 跨 kind 拒绝(`ErrCrossKindMove`) / 不存在的轨道 / 不存在的 clip / 负 programStart 钳到 0
+- [x] `Validate` 在 `MoveClipAcrossTracks` 之后保持 invariant — 由测试中断言 SourceID 仍指向 Sources 间接覆盖;前端在执行后调 store 走 `applyProjectPatch`,Validate 仍以全量保存路径生效
 
 #### A.2 验证
 
-- [ ] `go test ./multitrack/...` 全绿
-- [ ] `CGO_ENABLED=0 go test ./...` 全绿
-- [ ] `go build ./...` 通过
+- [x] `go test ./multitrack/...` 全绿
+- [x] `CGO_ENABLED=0 go test ./...` 全绿
+- [x] `go build ./...` 通过
 
 ### B. 前端
 
 #### B.1 Store 扩展(`web/src/stores/multitrack.ts`)
 
-- [ ] 加状态:`selection: ClipSelection[]`(自定义类型 `{ trackId: string; clipId: string }`)+ `splitScope: SplitScope`(union `'all' | 'video' | 'audio' | { kind: 'track'; id: string }`)+ `rangeSelection: RangeSelection | null`(复用共享 `RangeSelection` 类型)+ `libraryCollapsed: boolean`
-- [ ] 接 `useUndoStack`:`snapshot()` 取 `videoTracks/audioTracks` 深拷贝,`apply(s)` 通过 `applyProjectPatch` 写回;暴露 `pushHistory / undo / redo / canUndo / canRedo`(同 editor.ts)
-- [ ] 选择 / 范围辅助:加纯函数 `selToggle / selReplace / selInTrack`(同 `Sel` 形状,但 trackId 替代 track kind)
-- [ ] `loadProject(p)` 重置 selection / splitScope / rangeSelection / playhead / 撤销栈(对齐 editor.ts `loadProject` 行为)
-- [ ] `removeVideoTrack(id) / removeAudioTrack(id)` action(走后端纯函数对应的 patch:本地直接重写 tracks 数组 + 调 `applyProjectPatch`,不需要新 API,后端 `PUT /:id` 已支持全量替换)
-- [ ] `moveClipAcrossTracks(fromTrackId, toTrackId, kind, clipId, newProgramStart)`:同 kind 间移动,本地纯计算 + `applyProjectPatch`
-- [ ] `playhead` 已在 M6 加;`splitScope` watch 用于 ops
+- [x] 加状态:`selection: MultitrackClipSelection[]`(`{ trackId, clipId }`)+ `splitScope: MultitrackSplitScope`(`'all' | 'video' | 'audio' | { kind: 'track'; id: string }`)+ `rangeSelection: RangeSelection | null` + `libraryCollapsed: boolean`
+- [x] 接 `useUndoStack`:`snapshot()` 取 `videoTracks/audioTracks` 深拷贝,`apply(s)` 通过 `applyProjectPatch` 写回;暴露 `pushHistory / undo / redo / canUndo / canRedo`(同 editor.ts)
+- [x] 选择辅助:`MultitrackSel` 提供 `has / toggle / replace / inTrack`(独立于 editor 的 `Sel`)
+- [x] `loadProject(p)` 重置 selection / splitScope / rangeSelection / playhead / libraryCollapsed / 撤销栈;`createNew` 与 `openProject` 都走它,`closeProject` 同步重置
+- [x] `removeVideoTrack(id) / removeAudioTrack(id)`:本地纯计算 + `applyProjectPatch`,删 track 的同时清 selection/splitScope 中失效的引用
+- [x] `moveClipAcrossTracks(kind, fromTrackId, toTrackId, clipId, newProgramStart)`:同 kind 间移动,本地纯计算 + `applyProjectPatch`;**不**自动 `pushHistory`,由调用方(拖拽 onUp)负责一次性 push
+- [x] `playhead`(M6)+ M7 新增 selection/scope/range 的 watch 经由 `programDuration` 自动钳制保持
 
 #### B.2 Ops composable(`web/src/composables/useMultitrackOps.ts` 新文件)
 
-参照 `useEditorOps`,但要支持四态 `splitScope`:
+参照 `useEditorOps`,支持四态 `splitScope`:
 
-- [ ] `tracksInScope(): Array<{ kind, id }>` 把 `'all'` 展开为所有视频轨 + 所有音频轨;`'video'` 展开为所有视频轨;`'audio'` 展开为所有音频轨;`{ kind: 'track', id }` 展开为单条
-- [ ] `splitAtPlayhead()`:遍历 `tracksInScope()`,对每条 track 的 clips 调 `splitTrack`(`@/utils/timeline`,可直接复用,因为它是按 `programStart/sourceStart/sourceEnd` 工作,与 sourceId 无关——但要确认新分裂出的 clip 复制 `sourceId` 字段);若 splitTrack 不复制扩展字段则需新增 `splitTrackMultitrack` 包装(读源 clip 的 sourceId 写到两个产物上)
-- [ ] `deleteSelection()`:范围选区优先(`carveRange` 同样需检查是否复制 sourceId);否则按 `selection` 删
-- [ ] 删除时同步清 `selection`、清 `rangeSelection`、`pushHistory()`
-- [ ] 暴露:`splitAtPlayhead / deleteSelection / addVideoTrack / addAudioTrack / removeTrack(kind, id)`(removeTrack 内部 confirm)
+- [x] `tracksInScope(): Array<{ kind, id }>` 把 `'all'` / `'video'` / `'audio'` / `{kind:'track',id}` 各自展开
+- [x] `splitAtPlayhead()`:对每条 in-scope track 调 `splitTrack`(共享 `@/utils/timeline`,用 `{...c, ...}` 已自动保留 `sourceId`,不需要新增包装)
+- [x] `deleteSelection()`:范围选区优先(`carveRange`,同样保留 `sourceId`);否则按 `selection` 删,清 `selection` + `rangeSelection`,`pushHistory()`
+- [x] 暴露:`splitAtPlayhead / deleteSelection / tracksInScope / removeTrack(kind, id)` + `Sel` (=`MultitrackSel`)
+- [x] `removeTrack` 内部:track 有 clip 时 `window.confirm` 二次确认;空 track 直接删
 
-> **疑似坑**:确认 `web/src/utils/timeline.ts` 的 `splitTrack` / `carveRange` 是否会保留输入 clip 上 `sourceId` 等多出字段。如果用 `{...c, sourceStart, sourceEnd}` 这种解构覆写则会保留;如果 hand-roll 新对象就不会。需要 grep + 必要时改为 `{...c, ...}` 模式或在多轨包装层补 sourceId。
+> **关于 sourceId 保留**:已确认 `splitTrack` / `carveRange` 全部走 `{ ...c, ...overrides }`,扩展字段(包括 `sourceId`)自动跟随,不需要新包装。
 
-#### B.3 跨轨拖动(扩展 `useTimelineDrag` 或新建 composable)
+#### B.3 跨轨拖动(扩展 `useTimelineDrag`)
 
-- [ ] 评估方案:
-  - **A**:扩展 `useTimelineDrag.startReorder` 增加可选 `findTargetTrack(ev)` 回调;落地时若返回的 trackId 与原 trackId 不同,执行跨轨移动(`getClips(from)` 删 + `getClips(to)` 加)。
-  - **B**:多轨独立 `useMultitrackOps.startCrossTrackReorder`,只在多轨视图上替换 `startReorder`;`useTimelineDrag` 不变。
-  - **决策**:走 **A**,把 `findTargetTrack` 做成 opts 字段(默认返回原 trackId 即同轨重排,与现状等价);避免分裂出两套相似 reorder 逻辑。
-- [ ] 视觉反馈:拖动时给跟随的"幽灵 clip"挂一个浅色覆盖块,跟光标移动(M7 简化:不做幽灵,直接动 store 里 clip 的 trackId,实时反映;若 UX 卡可加节流);跨 kind hover 时光标变成 `not-allowed`,落地拒绝
-- [ ] `MultitrackView` 把 `findTargetTrack` 实现为读 `ev.target` 找 `[data-multitrack-track-kind][data-multitrack-track-id]`(给每条 `TimelineTrackRow` 包裹层加这两个 data-* 属性)
+- [x] **方案 A**:在 `useTimelineDrag.startReorder` 内加可选 `findTargetTrack(ev): string | null` + `onCrossTrack(from,to,clipId,programStart): boolean`。光标进入不同 trackId 时调 `onCrossTrack`,接受后重置 `currentTrackId/baseX/origProgramStart/snapPoints`,继续在新轨道上拖
+- [x] 视觉反馈:不做幽灵层,直接动 store(实时反映);跨 kind 时 `findTargetTrack` 返回 `null`,onCrossTrack 不触发,clip 留在原轨
+- [x] `MultitrackView` 给视频/音频轨外层套 `[data-mt-track-id][data-mt-track-kind]`,`findTrackUnderCursor` 用 `closest()` 解析
 
 #### B.4 接入共享 composable(`MultitrackView.vue`)
 
-- [ ] `useTimelineZoom`(已在 editor 用)+ `useTimelineDrag`(getClips/setClips 走 store) + `useTimelineRangeSelect` + `useTimelinePlayback`(togglePlay / split / delete / undo / redo / Esc 清范围)+ `useUndoStack` 已经在 store
-- [ ] `useTimelinePlayback` 现签名:`{ togglePlay, splitAtPlayhead, deleteSelection, seekBackBoundary, seekForwardBoundary, undo, redo, clearRangeSelection }`。多轨需新增"折叠素材库"按键(Ctrl+L) → 评估扩展 `useTimelinePlayback` opts 还是另写。**决策**:`useTimelinePlayback` 加 `extraBindings?: Array<{ keys: string[]; ctrl?: boolean; action: () => void }>` 可选项;不破坏 editor 调用方
-- [ ] 选中态、范围选区、playhead 渲染按 `splitScope` 切换(全局 / 仅视频 / 仅音频 / 单条轨):
-  - `'all'`:整个时间轴一根 playhead(贯穿所有轨)
-  - `'video'`:playhead 只渲染在视频轨区
-  - `'audio'`:同理
-  - `{ kind: 'track', id }`:playhead 只渲染在那一条轨上(类似单视频 splitScope=video / audio 的小游标)
-- [ ] 工具条:删除选中 / 撤销 / 重做按钮(可选,键盘已可达;若加按钮就 `MultitrackToolbar.vue` 抽出,顶栏不堆)
+- [x] `useTimelineZoom` + `useTimelineDrag<MultitrackClip>`(getClips/setClips 走 store,sourceMaxFor 走 sourcesById) + `useTimelineRangeSelect` + `useTimelinePlayback` + `useUndoStack`(已在 store)
+- [x] `useTimelinePlayback` 加 `extraBindings?: Array<{ keys, ctrl?, shift?, alt?, meta?, action }>`,`Ctrl+L` 折叠素材库走它;不破坏 editor 调用方
+- [x] playhead 渲染按 `splitScope` 切换:`'all'` 全高 / `'video'` 视频区高度 / `'audio'` 音频区高度 / `{kind:'track',id}` 单条 48px(top 由索引推导)
+- [x] 工具条:顶栏直接挂"撤销 / 重做 / 收起素材库"按钮(未抽 `MultitrackToolbar.vue`,以免堆叠;键盘已可达)
 
 #### B.5 删除轨道 / 折叠素材库
 
-- [ ] 每条 `TimelineTrackRow` 的左侧 label 区加一个 "×" 按钮(hover 显示);点击 → `confirm(`删除"${track.label}"?其上 N 个 clip 将一并删除`)` → store.removeVideoTrack/removeAudioTrack
-- [ ] `MultitrackLibrary` 加 collapse 开关(顶栏一个箭头按钮 + Ctrl+L);折叠后只剩一条 32px 宽的 sidebar,导入按钮和列表全隐;再按 Ctrl+L 展开
+- [x] 每条轨道左侧 label 区加 "×" 按钮 → `useMultitrackOps.removeTrack` → 含 clip 时 `confirm` 二次确认
+- [x] `Ctrl+L` / 顶栏按钮 切换 `store.libraryCollapsed`;折叠后用 32px 宽 sidebar 替代 `MultitrackLibrary`,只露一个 "»" 展开按钮
 
 ### C. 验收
 
-- [ ] `cd web && npx vue-tsc --noEmit` + `cd web && npm run build` 全绿
-- [ ] `go build ./...` + `go test ./...` + `CGO_ENABLED=0 go test ./...` 全绿
+- [x] `cd web && npx vue-tsc --noEmit` + `cd web && npm run build` 全绿(2026-04-30)
+- [x] `go build ./...` + `go test ./...` + `CGO_ENABLED=0 go test ./...` 全绿(2026-04-30)
 - [ ] **手测清单**(M7 终态,用户侧):
   - [ ] 三视频轨各 1 个 clip(高/中/低层) → 顶层预览正确,Ctrl+Z 撤销 / Ctrl+Y 重做依次回溯三次添加
   - [ ] 选中 clip(单击 / Shift 多选 / Ctrl 多选)→ Delete 删除;撤销恢复

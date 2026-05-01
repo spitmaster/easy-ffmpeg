@@ -1,28 +1,35 @@
 <script setup lang="ts">
-import { computed, onDeactivated, onMounted, ref, useTemplateRef } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, toRef, useTemplateRef, watch } from 'vue'
 import {
   SOURCE_VIDEO,
   type MultitrackClip,
   type MultitrackSource,
 } from '@/api/multitrack'
-import type { ProjectsModalItem, TrackData, TrackTone } from '@/types/timeline'
+import type { ProjectsModalItem, RangeSelection, TrackData, TrackTone } from '@/types/timeline'
 import { useDirsStore } from '@/stores/dirs'
-import { useMultitrackStore } from '@/stores/multitrack'
+import { useMultitrackStore, MultitrackSel } from '@/stores/multitrack'
 import { useModalsStore } from '@/stores/modals'
+import { useMultitrackOps } from '@/composables/useMultitrackOps'
+import { useTimelineDrag } from '@/composables/timeline/useTimelineDrag'
+import { useTimelinePlayback } from '@/composables/timeline/useTimelinePlayback'
+import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeSelect'
+import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
 import { Path } from '@/utils/path'
 import MultitrackLibrary from '@/components/multitrack/MultitrackLibrary.vue'
 import MultitrackPreview from '@/components/multitrack/MultitrackPreview.vue'
+import MultitrackToolbar from '@/components/multitrack/MultitrackToolbar.vue'
 import PlayBar from '@/components/timeline-shared/PlayBar.vue'
 import ProjectsModal from '@/components/timeline-shared/ProjectsModal.vue'
 import TimelinePlayhead from '@/components/timeline-shared/TimelinePlayhead.vue'
+import TimelineRangeSelection from '@/components/timeline-shared/TimelineRangeSelection.vue'
 import TimelineRuler from '@/components/timeline-shared/TimelineRuler.vue'
 import TimelineTrackRow from '@/components/timeline-shared/TimelineTrackRow.vue'
 
 /**
- * Multitrack editor view — M6.
+ * Multitrack editor view — M7.
  *
  * Layout:
- *   topbar (project actions + add-track buttons)
+ *   topbar (project actions + add-track buttons + undo/redo + library toggle)
  *   library | preview / playbar / timeline (video tracks ↑, audio tracks ↓)
  *
  * Drag/drop:
@@ -31,19 +38,43 @@ import TimelineTrackRow from '@/components/timeline-shared/TimelineTrackRow.vue'
  *   - Drop on the timeline area: video source → +video track + +audio track
  *     (when hasAudio); audio source → +audio track. Existing track of the
  *     right kind also accepts a drop, appending the clip at the playhead.
- *
- * M6 keeps interactions minimal: no clip selection, drag-trim, split, or
- * cross-track drag. Those land in M7.
+ *   - Cross-track clip drag (V→V / A→A) is wired through useTimelineDrag's
+ *     findTargetTrack / onCrossTrack callbacks; V→A and A→V drops are
+ *     rejected at findTargetTrack time so onCrossTrack never fires.
  */
 
 const store = useMultitrackStore()
 const dirs = useDirsStore()
 const modals = useModalsStore()
+const ops = useMultitrackOps()
 
 const projectsOpen = ref(false)
 const importing = ref(false)
 const libraryRef = useTemplateRef<{ setError: (msg: string) => void }>('libraryRef')
 const previewRef = useTemplateRef<{ play: () => void; pause: () => void; toggle: () => void; seek: (t: number) => void }>('previewRef')
+const scrollEl = useTemplateRef<HTMLDivElement>('scrollEl')
+const rulerScrollEl = useTemplateRef<HTMLDivElement>('rulerScrollEl')
+const labelsEl = useTemplateRef<HTMLDivElement>('labelsEl')
+const bodyEl = useTemplateRef<HTMLDivElement>('bodyEl')
+const rulerCmp = useTemplateRef<{ rootEl: HTMLDivElement | null }>('rulerCmp')
+
+/**
+ * X-scroll sync: only `scrollEl` shows a horizontal scrollbar; the ruler
+ * container at the top mirrors it so ruler and tracks stay aligned at any
+ * scrollLeft. The label column is overflow-hidden — it inherits Y from the
+ * body Y-scroll container, no X scroll there.
+ */
+function onTracksScroll() {
+  const s = scrollEl.value
+  const r = rulerScrollEl.value
+  if (s && r && r.scrollLeft !== s.scrollLeft) r.scrollLeft = s.scrollLeft
+}
+/** Body Y-scroll: keep label column's scrollTop aligned with tracks. */
+function onBodyScroll() {
+  const b = bodyEl.value
+  const l = labelsEl.value
+  if (b && l && l.scrollTop !== b.scrollTop) l.scrollTop = b.scrollTop
+}
 
 const hasProject = computed(() => !!store.project)
 
@@ -76,6 +107,258 @@ const audioTracksData = computed<TrackData[]>(() =>
     label: `音频 ${i + 1}`,
   })),
 )
+
+function selectedIdsForTrack(trackId: string): string[] {
+  return MultitrackSel.inTrack(store.selection, trackId)
+}
+
+// Playhead visibility per splitScope.
+const showPlayheadAll = computed(() => store.splitScope === 'all')
+const showPlayheadVideo = computed(() => store.splitScope === 'video')
+const showPlayheadAudio = computed(() => store.splitScope === 'audio')
+const ROW_PX = 48
+/**
+ * Single-track scope playhead top (in body-tracks content coordinates,
+ * which start at 0 — the ruler lives in its own container above the body
+ * Y-scroll, so the offset is purely the row stack index).
+ */
+const singleTrackScopeBodyTop = computed<number | null>(() => {
+  const s = store.splitScope
+  if (typeof s !== 'object') return null
+  const p = store.project
+  if (!p) return null
+  const vIdx = p.videoTracks.findIndex((t) => t.id === s.id)
+  if (vIdx >= 0) return vIdx * ROW_PX
+  const aIdx = p.audioTracks.findIndex((t) => t.id === s.id)
+  if (aIdx >= 0) return p.videoTracks.length * ROW_PX + aIdx * ROW_PX
+  return null
+})
+
+// ---- Timeline composables ----
+
+const zoom = useTimelineZoom({
+  pxPerSecond: toRef(store, 'pxPerSecond'),
+  totalSec: () => total.value,
+  scrollEl,
+})
+
+/**
+ * Resolve a track id from any DOM element in the timeline area. Track
+ * rows tag themselves with data-mt-track-id and data-mt-track-kind via
+ * outer wrappers in the template (see render below).
+ */
+function findTrackUnderCursor(ev: MouseEvent): { id: string; kind: 'video' | 'audio' } | null {
+  const target = ev.target as HTMLElement | null
+  if (!target) return null
+  const el = target.closest('[data-mt-track-id]') as HTMLElement | null
+  if (!el) return null
+  const id = el.dataset.mtTrackId
+  const kind = el.dataset.mtTrackKind as 'video' | 'audio' | undefined
+  if (!id || (kind !== 'video' && kind !== 'audio')) return null
+  return { id, kind }
+}
+
+/** Track id of the clip currently being dragged — used to gate cross-kind moves. */
+let dragKind: 'video' | 'audio' | null = null
+
+const drag = useTimelineDrag<MultitrackClip>({
+  pxPerSecond: () => store.pxPerSecond,
+  playhead: () => store.playhead,
+  getClips: (trackId) => {
+    const p = store.project
+    if (!p) return []
+    return (
+      p.videoTracks.find((t) => t.id === trackId)?.clips
+      ?? p.audioTracks.find((t) => t.id === trackId)?.clips
+      ?? []
+    )
+  },
+  setClips: (trackId, clips) => {
+    const p = store.project
+    if (!p) return
+    if (p.videoTracks.some((t) => t.id === trackId)) {
+      const next = p.videoTracks.map((t) => (t.id === trackId ? { ...t, clips } : t))
+      store.applyProjectPatch({ videoTracks: next }, { save: false })
+    } else {
+      const next = p.audioTracks.map((t) => (t.id === trackId ? { ...t, clips } : t))
+      store.applyProjectPatch({ audioTracks: next }, { save: false })
+    }
+  },
+  pushHistory: () => store.pushHistory(),
+  scheduleSave: () => store.scheduleSave(),
+  // Multitrack: each clip resolves source duration via clip.sourceId.
+  sourceMaxFor: (clip) => store.sourcesById[clip.sourceId]?.duration ?? 0,
+  findTargetTrack: (ev) => {
+    const hit = findTrackUnderCursor(ev)
+    if (!hit) return null
+    if (dragKind && hit.kind !== dragKind) return null
+    return hit.id
+  },
+  onCrossTrack: (from, to, clipId, programStart) => {
+    if (!dragKind) return false
+    store.moveClipAcrossTracks(dragKind, from, to, clipId, programStart)
+    return true
+  },
+})
+
+const rulerEl = computed(() => rulerCmp.value?.rootEl ?? null)
+const rangeSelect = useTimelineRangeSelect({
+  rulerEl,
+  pxPerSecond: () => store.pxPerSecond,
+  totalSec: () => total.value,
+  setRange: (r: RangeSelection | null) => {
+    store.rangeSelection = r
+  },
+  onStart: () => {
+    store.selection = []
+    store.splitScope = 'all'
+  },
+})
+
+const playback = useTimelinePlayback({
+  isLocked: () => false, // M8 will gate on a multitrack export job
+  togglePlay: () => previewRef.value?.toggle(),
+  splitAtPlayhead: () => ops.splitAtPlayhead(),
+  deleteSelection: () => ops.deleteSelection(),
+  seekBackBoundary: () => seekToNearestBoundary(-1),
+  seekForwardBoundary: () => seekToNearestBoundary(1),
+  undo: () => store.undo(),
+  redo: () => store.redo(),
+  clearRangeSelection: () => {
+    if (store.rangeSelection) store.rangeSelection = null
+  },
+  extraBindings: [
+    {
+      keys: ['l', 'L'],
+      ctrl: true,
+      action: (e) => {
+        e.preventDefault()
+        store.libraryCollapsed = !store.libraryCollapsed
+      },
+    },
+  ],
+})
+
+// ---- Boundary seek (collect all clips' boundaries across all tracks) ----
+
+function seekToNearestBoundary(direction: -1 | 1) {
+  const p = store.project
+  if (!p) return
+  const xs = new Set<number>()
+  xs.add(0)
+  for (const t of p.videoTracks) {
+    for (const c of t.clips) {
+      xs.add(c.programStart)
+      xs.add(c.programStart + (c.sourceEnd - c.sourceStart))
+    }
+  }
+  for (const t of p.audioTracks) {
+    for (const c of t.clips) {
+      xs.add(c.programStart)
+      xs.add(c.programStart + (c.sourceEnd - c.sourceStart))
+    }
+  }
+  const sorted = Array.from(xs).sort((a, b) => a - b)
+  const cur = store.playhead
+  if (direction < 0) {
+    for (let k = sorted.length - 1; k >= 0; k--) {
+      if (sorted[k] < cur - 0.05) {
+        previewRef.value?.seek(sorted[k])
+        return
+      }
+    }
+    previewRef.value?.seek(0)
+  } else {
+    for (const b of sorted) {
+      if (b > cur + 0.05) {
+        previewRef.value?.seek(b)
+        return
+      }
+    }
+    if (sorted.length > 0) previewRef.value?.seek(sorted[sorted.length - 1])
+  }
+}
+
+// ---- Timeline mouse handlers ----
+
+function clientXToTime(clientX: number, clamp = true): number {
+  const r = rulerEl.value
+  if (!r) return 0
+  const rect = r.getBoundingClientRect()
+  const x = clientX - rect.left
+  const t = x / store.pxPerSecond
+  if (!clamp) return t
+  return Math.max(0, Math.min(total.value, t))
+}
+
+function startScrubDrag(ev: MouseEvent) {
+  ev.preventDefault()
+  const wasPlaying = store.playing
+  if (wasPlaying) previewRef.value?.pause()
+  previewRef.value?.seek(clientXToTime(ev.clientX))
+  function onMove(e: MouseEvent) {
+    previewRef.value?.seek(clientXToTime(e.clientX))
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    if (wasPlaying) previewRef.value?.play()
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+function onRulerMouseDown(ev: MouseEvent) {
+  if (ev.button === 2) {
+    rangeSelect.start(ev)
+    return
+  }
+  store.splitScope = 'all'
+  store.selection = []
+  store.rangeSelection = null
+  startScrubDrag(ev)
+}
+
+function onPlayheadMouseDown(ev: MouseEvent) {
+  if (ev.button !== 0) return
+  ev.stopPropagation()
+  if (store.rangeSelection) store.rangeSelection = null
+  startScrubDrag(ev)
+}
+
+function onTrackMouseDown(
+  trackId: string,
+  kind: 'video' | 'audio',
+  payload: { ev: MouseEvent; clipId?: string; handle?: 'left' | 'right' },
+) {
+  const { ev, clipId, handle } = payload
+  if (ev.button !== 0) return
+  if (store.rangeSelection) store.rangeSelection = null
+
+  if (!clipId) {
+    // Empty area → narrow split scope to this track + scrub.
+    store.splitScope = { kind: 'track', id: trackId }
+    store.selection = []
+    startScrubDrag(ev)
+    return
+  }
+  const multi = ev.shiftKey || ev.ctrlKey || ev.metaKey
+  store.selection = multi
+    ? MultitrackSel.toggle(store.selection, trackId, clipId)
+    : MultitrackSel.replace(trackId, clipId)
+  store.splitScope = { kind: 'track', id: trackId }
+  if (handle) {
+    drag.startTrim(ev, trackId, clipId, handle)
+  } else if (!multi) {
+    dragKind = kind
+    drag.startReorder(ev, trackId, clipId)
+  }
+}
+
+// Suppress browser context menu — right-click on ruler is range select.
+function onContextMenu(ev: MouseEvent) {
+  ev.preventDefault()
+}
 
 // ---- Project lifecycle ----
 
@@ -151,7 +434,7 @@ async function onRemoveSource(sourceId: string) {
   }
 }
 
-// ---- Add track buttons ----
+// ---- Add / remove tracks ----
 
 function onAddVideoTrack() {
   if (!store.project) return
@@ -161,6 +444,10 @@ function onAddVideoTrack() {
 function onAddAudioTrack() {
   if (!store.project) return
   store.addAudioTrack()
+}
+
+function onRemoveTrack(kind: 'video' | 'audio', id: string) {
+  ops.removeTrack(kind, id)
 }
 
 // ---- Drag/drop from library ----
@@ -209,7 +496,6 @@ function makeClip(src: MultitrackSource, programStart: number): MultitrackClip {
  * Drop onto blank timeline space → auto-create the right tracks.
  * Video source → 1 video track + 1 audio track if it has audio.
  * Audio source → 1 audio track.
- * Clip program start is 0 — the user can move it later.
  */
 function onTimelineDropEmpty(ev: DragEvent) {
   ev.preventDefault()
@@ -231,12 +517,7 @@ function onTimelineDropEmpty(ev: DragEvent) {
   }
 }
 
-/**
- * Drop onto a specific track row → append the clip at the current
- * playhead. M6 simplification: precise drop-position math lands in M7.
- * Mismatched kind (e.g. video source on audio track) is silently
- * ignored — the user gets visual feedback by the lack of a clip.
- */
+/** Drop onto a specific track row → append the clip at the playhead. */
 function onTrackDrop(ev: DragEvent, kind: 'video' | 'audio', trackId: string) {
   ev.preventDefault()
   if (!store.project) return
@@ -254,15 +535,30 @@ onMounted(() => {
   store.fetchList().catch(() => {})
 })
 
+onActivated(() => playback.attach())
 onDeactivated(() => {
+  playback.detach()
   // Best-effort flush on tab switch so unsaved drops persist.
   store.flushSave().catch(() => {})
 })
+onBeforeUnmount(() => {
+  playback.detach()
+  store.flushSave().catch(() => {})
+})
+
+watch(
+  () => store.project?.id,
+  () => {
+    if (!store.project) return
+    requestAnimationFrame(() => zoom.applyFit())
+  },
+)
+
 </script>
 
 <template>
   <section class="flex h-full flex-col">
-    <!-- Top bar: project actions + add-track buttons -->
+    <!-- Top bar: project actions + add-track buttons + undo/redo + library toggle -->
     <div class="flex shrink-0 items-center gap-2 border-b border-border-base bg-bg-panel px-4 py-2 text-sm">
       <button
         class="rounded border border-border-strong px-3 py-1 hover:bg-bg-elevated"
@@ -282,6 +578,12 @@ onDeactivated(() => {
           class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated"
           @click="onAddAudioTrack"
         >+ 音频轨</button>
+        <span class="mx-2 h-4 w-px bg-border-base"></span>
+        <button
+          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated"
+          title="折叠/展开素材库 (Ctrl+L)"
+          @click="store.libraryCollapsed = !store.libraryCollapsed"
+        >{{ store.libraryCollapsed ? '展开素材库' : '收起素材库' }}</button>
         <button
           class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-bg-elevated hover:text-fg-base"
           @click="onClose"
@@ -308,12 +610,23 @@ onDeactivated(() => {
 
     <div v-else class="flex flex-1 overflow-hidden">
       <MultitrackLibrary
+        v-if="!store.libraryCollapsed"
         ref="libraryRef"
         :sources="store.project!.sources"
         :importing="importing"
         @import="onImport"
         @remove="onRemoveSource"
       />
+      <div
+        v-else
+        class="flex h-full w-8 shrink-0 items-start justify-center border-r border-border-base bg-bg-panel pt-2"
+        title="展开素材库 (Ctrl+L)"
+      >
+        <button
+          class="rounded px-1 py-0.5 text-xs text-fg-muted hover:bg-bg-elevated hover:text-fg-base"
+          @click="store.libraryCollapsed = false"
+        >»</button>
+      </div>
 
       <div class="flex flex-1 flex-col overflow-hidden">
         <MultitrackPreview ref="previewRef" />
@@ -322,84 +635,181 @@ onDeactivated(() => {
           :playhead="store.playhead"
           :total-sec="total"
           :playing="store.playing"
-          @prev="previewRef?.seek(0)"
-          @next="previewRef?.seek(total)"
+          @prev="seekToNearestBoundary(-1)"
+          @next="seekToNearestBoundary(1)"
           @toggle="previewRef?.toggle()"
         />
 
-        <!-- Timeline area: video tracks (top → highest z) above ruler is
-             not how Premiere does it; we put the ruler on top and stack
-             video tracks below it in order, so scrolling reads naturally.
-             Track index 0 is bottom-most (lowest z); index N-1 is top. -->
+        <!-- Timeline area: ruler row (fixed at top) + body (Y-scroll
+             label column + X-scroll tracks). -->
         <div
-          class="relative flex h-64 shrink-0 overflow-hidden border-t border-border-base bg-bg-base"
+          class="relative flex h-64 shrink-0 flex-col overflow-hidden border-t border-border-base bg-bg-base"
+          @contextmenu="onContextMenu"
           @dragover="onTimelineDragOver"
           @drop="onTimelineDropEmpty"
         >
-          <!-- Left labels column: ruler row + per-track labels. -->
-          <div class="flex w-24 shrink-0 flex-col overflow-y-auto border-r border-border-base bg-bg-panel text-xs">
-            <div class="h-7 shrink-0 border-b border-border-base"></div>
+          <!-- Header row: corner + ruler. The ruler container's X-scroll is
+               kept in sync with the tracks via onTracksScroll, so this row
+               always shows the same time range as what's below. -->
+          <div class="flex shrink-0">
+            <div class="h-7 w-28 shrink-0 border-b border-r border-border-base bg-bg-panel"></div>
             <div
-              v-for="t in videoTracksData"
-              :key="'lv-' + t.id"
-              class="flex h-12 shrink-0 items-center border-b border-border-base px-2"
-            >🎬 {{ t.label }}</div>
-            <div
-              v-for="t in audioTracksData"
-              :key="'la-' + t.id"
-              class="flex h-12 shrink-0 items-center border-b border-border-base px-2"
-            >🔊 {{ t.label }}</div>
-            <div v-if="videoTracksData.length + audioTracksData.length === 0" class="px-2 py-3 text-[11px] text-fg-muted">
-              拖入素材即建轨
+              ref="rulerScrollEl"
+              class="relative flex-1 overflow-hidden"
+            >
+              <TimelineRuler
+                ref="rulerCmp"
+                :px-per-second="store.pxPerSecond"
+                :total-sec="total"
+                :track-width="trackWidth"
+                @mousedown="onRulerMouseDown"
+              />
+              <!-- Playhead segments that should overlap the ruler row. They
+                   ride the ruler's X-scroll context so they stay aligned
+                   with the tracks below at any scrollLeft. -->
+              <TimelinePlayhead
+                v-show="showPlayheadAll && store.project && total > 0"
+                :x="playheadX"
+                top="0"
+                height="28px"
+                @mousedown="onPlayheadMouseDown"
+              />
             </div>
           </div>
 
-          <!-- Right scrolling area -->
-          <div class="relative flex-1 overflow-x-auto overflow-y-auto">
-            <TimelineRuler
-              :px-per-second="store.pxPerSecond"
-              :total-sec="total"
-              :track-width="trackWidth"
-            />
-
-            <TimelineTrackRow
-              v-for="t in videoTracksData"
-              :key="'v-' + t.id"
-              :track="t"
-              :px-per-second="store.pxPerSecond"
-              :track-width="trackWidth"
-              :selected-ids="[]"
-              height-class="h-12"
-              @dragover="onTimelineDragOver"
-              @drop.stop="(ev: DragEvent) => onTrackDrop(ev, 'video', t.id)"
-            />
-
-            <TimelineTrackRow
-              v-for="t in audioTracksData"
-              :key="'a-' + t.id"
-              :track="t"
-              :px-per-second="store.pxPerSecond"
-              :track-width="trackWidth"
-              :selected-ids="[]"
-              height-class="h-12"
-              top-border
-              @dragover="onTimelineDragOver"
-              @drop.stop="(ev: DragEvent) => onTrackDrop(ev, 'audio', t.id)"
-            />
-
-            <!-- Empty-timeline drop hint sits inside the scroll area so
-                 the dragover hit-test always lands on something useful. -->
+          <!-- Body: shared Y-scroll for labels + tracks. The labels column
+               itself is overflow-hidden, scrollTop synced from the body. -->
+          <div ref="bodyEl" class="flex flex-1 overflow-y-auto overflow-x-hidden" @scroll="onBodyScroll">
+            <!-- Labels column. Inner div lets content grow taller than the
+                 visible column so it scrolls with the body. -->
             <div
-              v-if="videoTracksData.length + audioTracksData.length === 0"
-              class="absolute inset-0 flex items-center justify-center text-[11px] text-fg-muted"
-            >拖入素材到此处自动建轨</div>
+              ref="labelsEl"
+              class="w-28 shrink-0 overflow-hidden border-r border-border-base bg-bg-panel text-xs"
+            >
+              <div class="flex flex-col">
+                <div
+                  v-for="t in videoTracksData"
+                  :key="'lv-' + t.id"
+                  class="group flex h-12 shrink-0 items-center gap-1 border-b border-border-base px-2"
+                >
+                  <span class="truncate">🎬 {{ t.label }}</span>
+                  <button
+                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger group-hover:opacity-100"
+                    title="删除该轨道"
+                    @click.stop="onRemoveTrack('video', t.id)"
+                  >×</button>
+                </div>
+                <div
+                  v-for="t in audioTracksData"
+                  :key="'la-' + t.id"
+                  class="group flex h-12 shrink-0 items-center gap-1 border-b border-border-base px-2"
+                >
+                  <span class="truncate">🔊 {{ t.label }}</span>
+                  <button
+                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger group-hover:opacity-100"
+                    title="删除该轨道"
+                    @click.stop="onRemoveTrack('audio', t.id)"
+                  >×</button>
+                </div>
+                <div v-if="videoTracksData.length + audioTracksData.length === 0" class="px-2 py-3 text-[11px] text-fg-muted">
+                  拖入素材即建轨
+                </div>
+              </div>
+            </div>
 
-            <TimelinePlayhead
-              v-show="store.project && total > 0"
-              :x="playheadX"
-            />
+            <!-- Tracks: X-scroll only. Y-scroll is owned by the parent body. -->
+            <div
+              ref="scrollEl"
+              class="relative flex-1 overflow-x-auto overflow-y-hidden"
+              @wheel="zoom.onWheel"
+              @scroll="onTracksScroll"
+            >
+              <div
+                v-for="t in videoTracksData"
+                :key="'v-' + t.id"
+                :data-mt-track-id="t.id"
+                data-mt-track-kind="video"
+              >
+                <TimelineTrackRow
+                  :track="t"
+                  :px-per-second="store.pxPerSecond"
+                  :track-width="trackWidth"
+                  :selected-ids="selectedIdsForTrack(t.id)"
+                  height-class="h-12"
+                  @mousedown="(payload) => onTrackMouseDown(t.id, 'video', payload)"
+                  @dragover="onTimelineDragOver"
+                  @drop.stop="(ev: DragEvent) => onTrackDrop(ev, 'video', t.id)"
+                />
+              </div>
+
+              <div
+                v-for="t in audioTracksData"
+                :key="'a-' + t.id"
+                :data-mt-track-id="t.id"
+                data-mt-track-kind="audio"
+              >
+                <TimelineTrackRow
+                  :track="t"
+                  :px-per-second="store.pxPerSecond"
+                  :track-width="trackWidth"
+                  :selected-ids="selectedIdsForTrack(t.id)"
+                  height-class="h-12"
+                  top-border
+                  @mousedown="(payload) => onTrackMouseDown(t.id, 'audio', payload)"
+                  @dragover="onTimelineDragOver"
+                  @drop.stop="(ev: DragEvent) => onTrackDrop(ev, 'audio', t.id)"
+                />
+              </div>
+
+              <!-- Empty-timeline drop hint inside the scroll area so the
+                   dragover hit-test always lands on something useful. -->
+              <div
+                v-if="videoTracksData.length + audioTracksData.length === 0"
+                class="absolute inset-0 flex items-center justify-center text-[11px] text-fg-muted"
+              >拖入素材到此处自动建轨</div>
+
+              <TimelineRangeSelection
+                :range="store.rangeSelection"
+                :px-per-second="store.pxPerSecond"
+              />
+
+              <!-- Playheads inside the body cover the tracks. Heights are
+                   computed inline so they align to the row stack regardless
+                   of the body Y-scroll position (top is in tracks-content
+                   coordinates). -->
+              <TimelinePlayhead
+                v-show="showPlayheadAll && store.project && total > 0"
+                :x="playheadX"
+                top="0"
+                @mousedown="onPlayheadMouseDown"
+              />
+              <TimelinePlayhead
+                v-show="showPlayheadVideo && store.project && total > 0 && videoTracksData.length > 0"
+                :x="playheadX"
+                top="0"
+                :height="(videoTracksData.length * ROW_PX) + 'px'"
+                @mousedown="onPlayheadMouseDown"
+              />
+              <TimelinePlayhead
+                v-show="showPlayheadAudio && store.project && total > 0 && audioTracksData.length > 0"
+                :x="playheadX"
+                :top="(videoTracksData.length * ROW_PX) + 'px'"
+                :height="(audioTracksData.length * ROW_PX) + 'px'"
+                @mousedown="onPlayheadMouseDown"
+              />
+              <TimelinePlayhead
+                v-if="singleTrackScopeBodyTop !== null"
+                v-show="store.project && total > 0"
+                :x="playheadX"
+                :top="singleTrackScopeBodyTop + 'px'"
+                :height="ROW_PX + 'px'"
+                @mousedown="onPlayheadMouseDown"
+              />
+            </div>
           </div>
         </div>
+
+        <MultitrackToolbar />
       </div>
     </div>
 
