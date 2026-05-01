@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 当前版本 | **v0.5.1** |
-| 进行中 | **多轨剪辑器**(类 Premiere Pro 的多源/多轨/叠加剪辑,新 Tab),M1 PRD ✅ + M2 技术设计 ✅,M3 后端共享层抽取待启动。分支 `feature-v0.5.0/multitrack-editor`。详见 [milestones.md](milestones.md) |
+| 当前版本 | **v0.6.0** |
+| 进行中 | _(无)_ — 上一个功能多轨剪辑器已于 v0.6.0 发布,见 [milestones.md](milestones.md) 已归档 |
 
 ---
 
@@ -72,6 +72,7 @@
 - 非 FFmpeg 的处理引擎
 - 移动端 / 平板专门适配
 - ~~嵌入 webview(走 Electron / Tauri / Wails 路线)~~ — **v0.4.0 撤销**:Wails 桌面版作为 Web 版的并列产物(不替换 Web 版)。详见 [core/desktop.md](core/desktop.md)
+- **多轨剪辑进阶**(PiP / 位置 / 缩放 / 不透明度 / 关键帧动画 / 转场 / 调色)— v0.6.0 多轨剪辑器只做全屏 overlay + amix,这些进阶能力推迟到 v0.7.x 单独立项。详见 [tabs/multitrack/product.md](tabs/multitrack/product.md)
 
 ---
 
@@ -87,3 +88,4 @@
 | **0.3.x** | 导出体验体系化(共享进度条 / dryRun 命令预览 / 自绘确认对话框 / 短轨自动 pad) |
 | **0.4.0** | Wails 桌面版并列产物(共享后端字节相同,cgo 隔离在 `cmd/desktop/`) |
 | **0.5.0–0.5.1** | 前端 Vue 化(Vue 3 + Vite + TS + Pinia + Tailwind;为多轨剪辑器铺路) |
+| **0.6.0** | 多轨剪辑器(类 Premiere Pro:多源素材库、N 视频/音频轨、跨轨拖动、overlay/amix 单次 ffmpeg 导出;后端 `editor/common/` 抽出与单视频共享) |

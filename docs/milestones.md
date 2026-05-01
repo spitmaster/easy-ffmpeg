@@ -10,9 +10,7 @@
 
 ## 进行中
 
-| Feature | 分支 | 状态 | 详情 |
-|---------|------|------|------|
-| 多轨剪辑器(类 Premiere Pro) | `feature-v0.5.0/multitrack-editor` | 🚧 M1+M2 完成,M3 待启动 | [milestones/feature-v0.5.0_multitrack-editor.md](milestones/feature-v0.5.0_multitrack-editor.md) |
+_(无)_ — 上一个功能多轨剪辑器已于 v0.6.0 发布,见下方"已归档"。
 
 ---
 
@@ -22,6 +20,7 @@
 
 | Feature | 分支 | 完成日期 | 详情 |
 |---------|------|---------|------|
+| 多轨剪辑器(类 Premiere Pro,v0.6.0) | `feature-v0.5.0/multitrack-editor` | 2026-05-01 | [milestones/archive/feature-v0.5.0_multitrack-editor.md](milestones/archive/feature-v0.5.0_multitrack-editor.md) |
 | 前端 Vue 化迁移(v0.5.x) | `v0.5.0` | 2026-04-30 | [milestones/archive/v0.5.0.md](milestones/archive/v0.5.0.md) |
 
 ---

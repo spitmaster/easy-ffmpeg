@@ -75,10 +75,11 @@ docs/
 └── tabs/
     ├── convert/{product,program}.md  视频转换
     ├── audio/{product,program}.md    音频处理(三模式)
-    └── editor/{product,program}.md   单视频剪辑器
+    ├── editor/{product,program}.md   单视频剪辑器
+    └── multitrack/{product,program}.md  多轨剪辑器(类 Premiere Pro)
 ```
 
-未实现的 Tab(媒体信息、设置、多轨剪辑)暂未建目录。
+未实现的 Tab(媒体信息、设置)暂未建目录。
 
 按场景挑读:
 
@@ -99,7 +100,7 @@ docs/
 ## 双入口拓扑(v0.4.0+)
 
 ```text
-共享层(server/ service/ editor/ internal/ config/)── 字节相同
+共享层(server/ service/ editor/ editor/common/ multitrack/ internal/ config/)── 字节相同
     │
     ├── cmd/main.go         → Web 版,浏览器打开 localhost
     └── cmd/desktop/main.go → 桌面版,Wails WebView 指向同一个 localhost
@@ -122,6 +123,8 @@ docs/
 - [server/](server/) — HTTP 服务、路由、handlers;通过 `import "easy-ffmpeg/web"` 拿前端资源
 - [web/](web/) — 前端工程(v0.5.x+,Vue 3 + Vite + TS + Pinia + Tailwind);源码 `web/src/`,产物 `web/dist/` 由 `web/embed.go` 用 `//go:embed all:dist` 嵌入
 - [editor/](editor/) — 单视频剪辑器(SOLID 分层:`domain`/`api`/`ports`/`storage`)
+- [editor/common/](editor/common/) — 单视频与多轨共享的纯函数与端口(`domain`:Clip / PlanSegments / BuildVideoTrackFilter / BuildAudioTrackFilter / Split-Delete-Reorder-Trim / ValidateClips;`ports`:clock/runner/paths)
+- [multitrack/](multitrack/) — 多轨剪辑器(类 Premiere Pro,SOLID 分层:`domain`/`api`/`ports`/`storage`),复用 `editor/common/`
 - [service/](service/) — FFmpeg/FFprobe 命令封装
 - [internal/embedded/](internal/embedded/) — 7z 嵌入与解压
 - [internal/job/](internal/job/) `internal/browser/` `internal/procutil/` — 进程内任务、打开浏览器、隐藏子进程窗口
@@ -136,8 +139,10 @@ docs/
 后端有测试:
 
 - `server/audio_args_test.go` — 音频命令构建器
-- `editor/domain/*_test.go` — 剪辑器纯函数(Project/Timeline/Export)
+- `editor/common/domain/*_test.go` — 共享纯函数(Clip / PlanSegments / BuildVideoTrackFilter / BuildAudioTrackFilter)
+- `editor/domain/*_test.go` — 单视频剪辑器纯函数(Project/Timeline/Export)
 - `editor/storage/jsonrepo_test.go` — JSON 仓库
+- `multitrack/domain/*_test.go` — 多轨 timeline / filter / export(含 §5.3 全矩阵)
 
 前端目前无单测(见 [docs/core/frontend-vue-migration.md §0](docs/core/frontend-vue-migration.md))。
 

@@ -19,12 +19,13 @@ docs/
 └── tabs/                      已实现的 Tab,各自独立目录
     ├── convert/               视频转换
     ├── audio/                 音频处理(三模式)
-    └── editor/                单视频剪辑器
+    ├── editor/                单视频剪辑器
+    └── multitrack/            多轨剪辑器(类 Premiere Pro)
 ```
 
 每个 Tab 目录下分两个文件:`product.md` 是产品设计(目标、交互、字段、规则),`program.md` 是程序设计(代码组织、命令构建、API、测试)。
 
-未实现的 Tab(媒体信息、设置、多轨剪辑)暂不建目录,见 [roadmap.md](roadmap.md)。
+未实现的 Tab(媒体信息、设置)暂不建目录,见 [roadmap.md](roadmap.md)。
 
 ## 分支驱动的发现协议(rule v1.1 §5)
 
@@ -84,7 +85,7 @@ docs/todo/<branch_name with "/" → "_">.md
 | 视频转换 | ✅ | [tabs/convert/product.md](tabs/convert/product.md) | [tabs/convert/program.md](tabs/convert/program.md) |
 | 音频处理(三模式) | ✅ | [tabs/audio/product.md](tabs/audio/product.md) | [tabs/audio/program.md](tabs/audio/program.md) |
 | 单视频剪辑器 | ✅ | [tabs/editor/product.md](tabs/editor/product.md) | [tabs/editor/program.md](tabs/editor/program.md) |
-| 多轨剪辑器 | 🚧 PRD/技术设计完成,M3 待启动 | [tabs/multitrack/product.md](tabs/multitrack/product.md) | [tabs/multitrack/program.md](tabs/multitrack/program.md) |
+| 多轨剪辑器(类 Premiere Pro) | ✅ | [tabs/multitrack/product.md](tabs/multitrack/product.md) | [tabs/multitrack/program.md](tabs/multitrack/program.md) |
 | 媒体信息 | 🚧 占位 | — | — |
 | 设置 | 🚧 占位 | — | — |
 
@@ -99,10 +100,11 @@ docs/todo/<branch_name with "/" → "_">.md
 - 改构建/打包 → [core/build.md](core/build.md)
 - 桌面版相关 → [core/desktop.md](core/desktop.md)
 
-## 当前状态(v0.5.1)
+## 当前状态(v0.6.0)
 
 - **架构**:本地 HTTP 服务 + 浏览器 Web UI;v0.4.0 起增加并列的 Wails 桌面版
 - **前端**:Vue 3 + Vite + TypeScript + Pinia + Vue Router + TailwindCSS,工程目录在 `web/`,产物 `web/dist/` 由 `easy-ffmpeg/web` 包用 `//go:embed all:dist` 嵌入
 - **FFmpeg**:7z 压缩包嵌入 Go 二进制,首次启动解压到 `~/.easy-ffmpeg/bin-<hash>/`
 - **产物大小**:Web 版 Windows 35 MB · macOS 27 MB · Linux 29 MB;桌面版各 +5–15 MB(前端 bundle 经 Vite 构建后约几十 KB,体积影响可忽略)
-- **测试**:`server/audio_args_test.go` + `editor/domain/*_test.go` + `editor/storage/jsonrepo_test.go`;跑 `go test ./...` 与 `CGO_ENABLED=0 go test ./...` 双验证;前端目前未引入单测(见 [frontend-vue-migration.md §0](core/frontend-vue-migration.md))
+- **后端共享层**:`editor/common/{domain,ports}/` 抽出供单视频与多轨复用;`multitrack/` 是 v0.6.0 新增的独立模块(SOLID 分层),与 `editor/` 平级
+- **测试**:`server/audio_args_test.go` + `editor/domain/*_test.go` + `editor/storage/jsonrepo_test.go` + `multitrack/domain/*_test.go`(多轨 timeline / filter / export);跑 `go test ./...` 与 `CGO_ENABLED=0 go test ./...` 双验证;前端目前未引入单测(见 [frontend-vue-migration.md §0](core/frontend-vue-migration.md))
