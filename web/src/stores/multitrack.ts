@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import {
   multitrackApi,
   type MultitrackAudioTrack,
+  type MultitrackCanvas,
   type MultitrackClip,
   type MultitrackImportError,
   type MultitrackProject,
@@ -55,8 +56,10 @@ export type MultitrackSplitScope =
 
 /** Snapshot of the editable timeline state for the undo stack. Sources +
  * AudioVolume are intentionally excluded — undo only retracts edits, not
- * library or mix changes (matches editor.ts ClipsSnapshot). */
+ * library or mix changes (matches editor.ts ClipsSnapshot). Canvas is
+ * included so changing the project canvas (M4) is reversible. */
 export interface MultitrackSnapshot {
+  canvas: MultitrackCanvas
   videoTracks: MultitrackVideoTrack[]
   audioTracks: MultitrackAudioTrack[]
 }
@@ -88,17 +91,19 @@ export const useMultitrackStore = defineStore('multitrack', () => {
    */
   const exportLocked = ref(false)
 
-  function snapshotTracks(p: MultitrackProject): MultitrackSnapshot {
+  function snapshotProject(p: MultitrackProject): MultitrackSnapshot {
     return {
+      canvas: { ...p.canvas },
       videoTracks: p.videoTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
       audioTracks: p.audioTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
     }
   }
 
   const undoStack = useUndoStack<MultitrackSnapshot>({
-    snapshot: () => snapshotTracks(project.value!),
+    snapshot: () => snapshotProject(project.value!),
     apply: (s) => {
       applyProjectPatch({
+        canvas: { ...s.canvas },
         videoTracks: s.videoTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
         audioTracks: s.audioTracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })),
       })
@@ -143,7 +148,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     libraryCollapsed.value = false
     exportLocked.value = false
     dirty.value = false
-    undoStack.reset(snapshotTracks(p))
+    undoStack.reset(snapshotProject(p))
   }
 
   async function fetchList(): Promise<MultitrackProjectSummary[]> {
@@ -274,6 +279,19 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     if (typeof splitScope.value === 'object' && splitScope.value.id === id) {
       splitScope.value = 'all'
     }
+    undoStack.push()
+  }
+
+  /**
+   * Set the project canvas (W/H/FR). Treated like any other commit-grade
+   * edit: applies the patch, marks dirty, autosaves, pushes one history
+   * entry. Out-of-bounds clips after the change are intentionally left
+   * alone — the dialog has already gotten user confirmation if any clip
+   * would become invisible (M4 product decision; UI flags them in M5).
+   */
+  function setCanvas(canvas: MultitrackCanvas) {
+    if (!project.value) return
+    applyProjectPatch({ canvas: { ...canvas } })
     undoStack.push()
   }
 
@@ -464,6 +482,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     addAudioTrack,
     removeVideoTrack,
     removeAudioTrack,
+    setCanvas,
     setAudioTrackVolume,
     moveClipAcrossTracks,
     appendClip,

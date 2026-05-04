@@ -12,7 +12,7 @@
 
 | Feature | 分支 | 启动日期 | 当前 M | 详情 |
 |---------|------|---------|--------|------|
-| 多轨画布 + clip 变换(v0.5.1) | `feature-v0.5.1/multitrack-scale-video` | 2026-05-04 | M1 ✅ M2 ✅ M3 ✅;M4 待启动 | [milestones/feature-v0.5.1_multitrack-scale-video.md](milestones/feature-v0.5.1_multitrack-scale-video.md) |
+| 多轨画布 + clip 变换(v0.5.1) | `feature-v0.5.1/multitrack-scale-video` | 2026-05-04 | M1 ✅ M2 ✅ M3 ✅ M4 ✅;M5 待启动 | [milestones/feature-v0.5.1_multitrack-scale-video.md](milestones/feature-v0.5.1_multitrack-scale-video.md) |
 
 ---
 

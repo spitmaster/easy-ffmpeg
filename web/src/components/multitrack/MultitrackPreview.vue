@@ -1,24 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { useMultitrackStore } from '@/stores/multitrack'
 import { useMultitrackPreview } from '@/composables/useMultitrackPreview'
 
 /**
  * Top-half preview pane.
  *
- * Layout: a single <video> overlaid by a stack of <audio> elements (one
- * per audio track). Drives them through useMultitrackPreview, which picks
- * the topmost video source for picture and syncs each <audio> to its
- * track's active clip.
+ * Layout: an outer "preview-shell" centers a "preview-canvas" box that
+ * scales to fit the available area while preserving the project canvas's
+ * aspect ratio (v0.5.1+). The <video> fills the canvas box with
+ * object-fill — when a clip's source resolution differs from the canvas,
+ * the preview stretches it to the canvas, matching the export's
+ * "scale to transform W×H" behavior. Audio elements live unstyled inside
+ * the box; useMultitrackPreview drives them.
  *
- * v1 strategy: only the top-most video track is shown (M2 design lock).
- * When stacked clips overlap a small chip is rendered to inform the user.
+ * Strategy preserved from v0.5.0: only the topmost video track is shown;
+ * cross-track composition (PIP / overlays) only takes effect at export.
+ * A small "预览仅显示顶层视频轨" chip appears when ≥2 video clips are
+ * active at the playhead.
  */
 const store = useMultitrackStore()
 const videoRef = useTemplateRef<HTMLVideoElement>('videoRef')
+const shellEl = useTemplateRef<HTMLDivElement>('shellEl')
 const audioRefs = ref<(HTMLAudioElement | null)[]>([])
 
 const audioTracks = computed(() => store.project?.audioTracks ?? [])
+const canvas = computed(() => store.project?.canvas ?? { width: 1920, height: 1080, frameRate: 30 })
 
 // Set audio refs in a manner that works with v-for + dynamic length.
 function setAudioRef(i: number, el: Element | null) {
@@ -28,6 +35,57 @@ function setAudioRef(i: number, el: Element | null) {
 const preview = useMultitrackPreview(videoRef, audioRefs, audioTracks)
 
 defineExpose({ play: preview.play, pause: preview.pause, toggle: preview.toggle, seek: preview.seek })
+
+// ---- Canvas-box sizing ----
+//
+// The shell's content area is always smaller than the project canvas
+// (which can be 4K or larger), so the box is computed each layout pass:
+//   s = min(boxW / canvasW, boxH / canvasH)   // fit-contain ratio
+//   width  = canvasW * s
+//   height = canvasH * s
+// We watch the shell's bounding rect with a ResizeObserver — flexbox
+// resizing the column doesn't fire window 'resize'.
+
+const shellW = ref(0)
+const shellH = ref(0)
+let ro: ResizeObserver | null = null
+
+onMounted(() => {
+  preview.refresh()
+  if (!shellEl.value) return
+  ro = new ResizeObserver((entries) => {
+    const r = entries[0]?.contentRect
+    if (!r) return
+    shellW.value = r.width
+    shellH.value = r.height
+  })
+  ro.observe(shellEl.value)
+  // Seed with current size so the first paint isn't 0×0.
+  const r = shellEl.value.getBoundingClientRect()
+  shellW.value = r.width
+  shellH.value = r.height
+})
+
+onUnmounted(() => {
+  ro?.disconnect()
+  ro = null
+})
+
+const PADDING = 8 // matches the bg-black margin around the canvas box
+const canvasBoxStyle = computed(() => {
+  const cw = canvas.value.width
+  const ch = canvas.value.height
+  const availW = Math.max(0, shellW.value - PADDING * 2)
+  const availH = Math.max(0, shellH.value - PADDING * 2)
+  if (availW <= 0 || availH <= 0 || cw <= 0 || ch <= 0) {
+    return { width: '0px', height: '0px' }
+  }
+  const s = Math.min(availW / cw, availH / ch)
+  return {
+    width: `${Math.floor(cw * s)}px`,
+    height: `${Math.floor(ch * s)}px`,
+  }
+})
 
 // Top-layer notice: any time we have ≥2 visible video tracks with a clip
 // at playhead, only the topmost is shown. The notice only renders when
@@ -55,31 +113,35 @@ const stackedActive = computed(() => {
 watch(audioTracks, (tracks) => {
   audioRefs.value.length = tracks.length
 })
-
-onMounted(() => {
-  preview.refresh()
-})
 </script>
 
 <template>
-  <div class="relative flex min-h-0 flex-1 items-center justify-center bg-black">
-    <video
-      ref="videoRef"
-      preload="auto"
-      muted
-      class="max-h-full max-w-full object-contain"
-    ></video>
-    <!-- Per-track audio elements. Hidden visually; useMultitrackPreview
-         drives src / currentTime / play state for each. WebAudio routes
-         each through its own GainNode so audio-track volume can exceed
-         100% (HTMLMediaElement.volume hard-caps at 1.0). -->
-    <audio
-      v-for="(t, i) in audioTracks"
-      :key="t.id"
-      :ref="(el) => setAudioRef(i, el as Element | null)"
-      preload="auto"
-      style="display: none"
-    ></audio>
+  <div
+    ref="shellEl"
+    class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black"
+  >
+    <div
+      class="relative bg-black"
+      :style="canvasBoxStyle"
+    >
+      <video
+        ref="videoRef"
+        preload="auto"
+        muted
+        class="absolute inset-0 h-full w-full object-fill"
+      ></video>
+      <!-- Per-track audio elements. Hidden visually; useMultitrackPreview
+           drives src / currentTime / play state for each. WebAudio routes
+           each through its own GainNode so audio-track volume can exceed
+           100% (HTMLMediaElement.volume hard-caps at 1.0). -->
+      <audio
+        v-for="(t, i) in audioTracks"
+        :key="t.id"
+        :ref="(el) => setAudioRef(i, el as Element | null)"
+        preload="auto"
+        style="display: none"
+      ></audio>
+    </div>
 
     <div
       v-if="stackedActive"

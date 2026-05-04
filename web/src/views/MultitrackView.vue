@@ -22,6 +22,7 @@ import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeS
 import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
 import { Path } from '@/utils/path'
 import { findMissingSources } from '@/utils/validateSources'
+import CanvasSettingsDialog from '@/components/multitrack/CanvasSettingsDialog.vue'
 import MultitrackLibrary from '@/components/multitrack/MultitrackLibrary.vue'
 import MultitrackPreview from '@/components/multitrack/MultitrackPreview.vue'
 import MultitrackToolbar from '@/components/multitrack/MultitrackToolbar.vue'
@@ -59,6 +60,7 @@ const modals = useModalsStore()
 const ops = useMultitrackOps()
 
 const projectsOpen = ref(false)
+const canvasOpen = ref(false)
 const importing = ref(false)
 
 const libraryRef = useTemplateRef<{ setError: (msg: string) => void }>('libraryRef')
@@ -627,6 +629,26 @@ async function warnIfSourcesMissing() {
   })
 }
 
+// ---- Canvas settings (M4) ----
+
+/**
+ * Topbar pill label for the canvas button: `1920×1080 @ 30fps`. Empty
+ * when no project is open (button itself is `v-if="hasProject"` so the
+ * label only renders when the canvas is real).
+ */
+const canvasLabel = computed(() => {
+  const c = store.project?.canvas
+  if (!c) return ''
+  // Drop trailing zeros so "30fps" beats "30.000fps" etc.
+  const fr = Number.isInteger(c.frameRate) ? `${c.frameRate}` : `${c.frameRate.toFixed(2)}`
+  return `${c.width}×${c.height} @ ${fr}fps`
+})
+
+function onCanvasSubmit(canvas: { width: number; height: number; frameRate: number }) {
+  store.setCanvas(canvas)
+  canvasOpen.value = false
+}
+
 </script>
 
 <template>
@@ -652,6 +674,13 @@ async function warnIfSourcesMissing() {
         :disabled="store.exportLocked"
         @click="onClose"
       >关闭工程</button>
+      <button
+        v-if="hasProject"
+        class="rounded border border-border-strong px-2 py-1 font-mono text-xs hover:bg-bg-elevated disabled:opacity-50"
+        :disabled="store.exportLocked"
+        :title="`点击修改工程画布(分辨率 / 帧率)`"
+        @click="canvasOpen = true"
+      >画布: {{ canvasLabel }} ▾</button>
       <div v-if="!hasProject" class="ml-2 truncate text-xs text-fg-muted">暂无打开的工程</div>
       <div class="ml-auto flex items-center gap-2">
         <span
@@ -967,6 +996,15 @@ async function warnIfSourcesMissing() {
       title="导出多轨工程"
       @close="exportFlow.dialogOpen.value = false"
       @submit="exportFlow.submit"
+    />
+
+    <CanvasSettingsDialog
+      v-if="store.project"
+      :open="canvasOpen"
+      :defaults="store.project.canvas"
+      :project="store.project"
+      @close="canvasOpen = false"
+      @submit="onCanvasSubmit"
     />
   </section>
 </template>
