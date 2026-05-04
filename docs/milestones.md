@@ -10,7 +10,9 @@
 
 ## 进行中
 
-_(无)_ — 上一个功能多轨剪辑器已于 v0.5.0 发布,见下方"已归档"。
+| Feature | 分支 | 启动日期 | 当前 M | 详情 |
+|---------|------|---------|--------|------|
+| 多轨画布 + clip 变换(v0.5.1) | `feature-v0.5.1/multitrack-scale-video` | 2026-05-04 | M1 ✅ M2 ✅;M3 待启动 | [milestones/feature-v0.5.1_multitrack-scale-video.md](milestones/feature-v0.5.1_multitrack-scale-video.md) |
 
 ---
 

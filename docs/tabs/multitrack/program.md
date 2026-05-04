@@ -2,6 +2,10 @@
 
 > 多轨 Tab 的代码组织、共享层抽取方案、数据模型、API 契约、预览策略、导出 filter graph、测试策略。
 > 对应产品设计:[product.md](product.md)。底层共享模块见 [core/modules.md](../../core/modules.md);前端架构见 [core/frontend.md](../../core/frontend.md);单视频剪辑器见 [tabs/editor/program.md](../editor/program.md)。
+>
+> **当前版本对齐**:
+> - §1–§11 描述 **v0.5.0** 已实现状态;
+> - **v0.5.1 工程画布 + clip 变换**的技术设计在 §12;v0.5.1 与基线冲突的章节(主要是 §3.2 数据模型、§5 导出 filter graph、§6 预览策略)已就地标注 "→ §12 覆盖"。
 
 ---
 
@@ -198,6 +202,8 @@ multitrack/
 
 ### 3.2 数据模型(Go)
 
+> **v0.5.1 扩展**:`Project` 加 `Canvas`、`Clip` 加 `Transform`,`SchemaVersion` v1 → v2。新增字段、Migrate 兜底、Validate 规则在 [§12.2](#122-数据模型变更v051) 详述,本节保留 v0.5.0 形态。
+
 ```go
 // multitrack/domain/project.go
 package domain
@@ -352,6 +358,8 @@ web/src/components/multitrack/
 
 ## 5. 导出 filter graph 详解
 
+> **v0.5.1 重写**:本节描述的"每轨 concat 全长 → 轨道间 `overlay=0:0`"结构在 v0.5.1 被替换为"base 画布 + 全 clip 平铺 overlay 链",见 [§12.3](#123-导出-filter-graph-真合成版v051)。本节保留作为 v0.5.0 历史描述与"零回归基线"。
+
 ### 5.1 装配规则
 
 ```text
@@ -404,6 +412,8 @@ web/src/components/multitrack/
 ---
 
 ## 6. 预览策略(关键技术决策)
+
+> **v0.5.1 不重写预览,但加变换框 overlay**:本节(单 `<video>` 切源 + 多 `<audio>`)在 v0.5.1 仍是默认。预览容器变成"画布尺寸的等比缩放盒",变换框作为 DOM overlay 叠加。详见 [§12.4](#124-前端预览端的画布与变换框v051)。
 
 ### 6.1 v1 默认方案:单 `<video>` 切源 + 多 `<audio>` 同步
 
@@ -600,3 +610,378 @@ mtMod.Register(mux, "/api/multitrack")
 | **M9** 收尾 | 文档归档 / 主索引更新 / `roadmap.md §4` 加 0.5.0 行 / 版本号 bump 0.5.0 / 单视频 Tab 零回归再确认 | M8 完成 |
 
 > 注:原 multitrack.md 中的"M9 视频叠加 / PiP" 推迟到 v2(0.7.x);v1 视频叠加只到 z-order 全屏 overlay,不含 position/scale/opacity。
+
+> **v0.5.1 启动后**(2026-05-04),原 v2 的 `position` / `scale` 部分**提前**到 v0.5.1,见 §12 与 [milestones/feature-v0.5.1_multitrack-scale-video.md](../../milestones/feature-v0.5.1_multitrack-scale-video.md);`opacity` / 旋转 / 多 `<video>` 同步预览仍留 v2。
+
+---
+
+## 12. v0.5.1 设计 — 工程画布 + clip 变换(真合成)
+
+> 对应 PRD:[product.md §12](product.md)。本节给出后端 / 前端 / filter graph 的具体技术方案。
+
+### 12.1 设计目标
+
+1. **真合成**:导出端从"上层全遮下层"切换为"alpha-aware overlay 平铺",上层 clip 不覆盖的区域必须看到下层
+2. **零回归**:打开 v0.5.0 旧工程,默认值兜底到 v0.5.0 行为(画布 = max sources、变换 = 全画布),导出**字节相同 / 视觉相同**
+3. **后端纯函数**:画布 / 变换全部进 `multitrack/domain/`,filter 装配仍是表驱动可测;不引新 cgo
+4. **前端共享层不动**:`components/timeline-shared/` + `composables/timeline/` 零改;变换框 / 画布对话框 / Inspector 全部在 `components/multitrack/` 下新增,不污染单视频
+5. **schema 演进可逆**:v2 → v0.5.0 客户端打开是"画布默认值 + 变换全画布",数值字段被解析层忽略,不破坏 JSON 解码(虽然项目不承诺向后兼容,但保持 schema 干净有助于回溯调试)
+
+### 12.2 数据模型变更(v0.5.1)
+
+#### 12.2.1 Go 类型
+
+```go
+// multitrack/domain/project.go
+const SchemaVersion = 2 // ← 从 1 升到 2
+
+type Canvas struct {
+    Width     int     `json:"width"`     // ≥ 16
+    Height    int     `json:"height"`    // ≥ 16
+    FrameRate float64 `json:"frameRate"` // (0, 240]
+}
+
+type Project struct {
+    // ...(v0.5.0 字段不变)
+    Canvas Canvas `json:"canvas"`        // ← v0.5.1 新增
+}
+
+// multitrack/domain/clip.go
+type Transform struct {
+    X int `json:"x"`
+    Y int `json:"y"`
+    W int `json:"w"` // > 0
+    H int `json:"h"` // > 0
+}
+
+type Clip struct {
+    common.Clip
+    SourceID  string    `json:"sourceId"`
+    Transform Transform `json:"transform"` // ← v0.5.1 新增
+}
+```
+
+> **不放在 `common.Clip` 上**的理由:`common.Clip` 是单视频与多轨的共享基类,单视频没有"画布上的位置"概念(它的画布 = 源分辨率);Transform 是多轨语义。把它挂在多轨自己的 `Clip` 上,共享层零改动。
+
+#### 12.2.2 Migrate(零回归核心)
+
+```go
+func (p *Project) Migrate() {
+    // ...(v0.5.0 兜底逻辑保留)
+
+    // v1 → v2:画布默认 = max(referenced video sources)
+    if p.Canvas.Width <= 0 || p.Canvas.Height <= 0 {
+        cw, ch, fr := deriveDefaultCanvas(p) // 复用 v0.5.0 在 export.go 里的算法
+        p.Canvas = Canvas{Width: cw, Height: ch, FrameRate: fr}
+    }
+    if p.Canvas.FrameRate <= 0 {
+        p.Canvas.FrameRate = 30
+    }
+
+    // v1 → v2:变换默认 = 全画布
+    fillDefaultTransform := func(clips []Clip) {
+        for i := range clips {
+            t := &clips[i].Transform
+            if t.W <= 0 || t.H <= 0 {
+                t.X, t.Y = 0, 0
+                t.W, t.H = p.Canvas.Width, p.Canvas.Height
+            }
+        }
+    }
+    for i := range p.VideoTracks {
+        fillDefaultTransform(p.VideoTracks[i].Clips)
+    }
+    // 音频轨的 Transform 永远忽略,不填(序列化时仍写出零值,无害)
+
+    p.SchemaVersion = SchemaVersion
+}
+```
+
+`deriveDefaultCanvas` 从现 `export.go` [multitrack/domain/export.go:103-135](../../../multitrack/domain/export.go#L103-L135) 抽出,export 路径继续调它(画布字段为零时兜底 — 但 Migrate 应该已经填上了,**这是双保险**)。
+
+#### 12.2.3 Validate(增量)
+
+```go
+// Project.Validate() 内追加:
+if p.Canvas.Width < 16 || p.Canvas.Height < 16 {
+    errs = append(errs, fmt.Errorf("canvas: %dx%d 太小(最小 16×16)", p.Canvas.Width, p.Canvas.Height))
+}
+if p.Canvas.FrameRate <= 0 || p.Canvas.FrameRate > 240 {
+    errs = append(errs, fmt.Errorf("canvas: frameRate %.2f 超出 (0, 240]", p.Canvas.FrameRate))
+}
+
+// 视频轨每个 clip 追加:
+if c.Transform.W <= 0 || c.Transform.H <= 0 {
+    errs = append(errs, fmt.Errorf("videoTracks[%d][%d]: transform W/H 必须 > 0", i, j))
+}
+// 出界**不报错**(允许动态摆位)
+```
+
+### 12.3 导出 filter graph(真合成版,v0.5.1)
+
+#### 12.3.1 总体结构
+
+放弃 v0.5.0 的"每轨 concat 全长 → 轨道间 overlay" 结构,改为**单一 base 画布 + 全部 video clip 按 z-order 平铺 overlay**:
+
+```text
+1. 起 base 画布:
+   color=c=black:s=CWxCH:r=FR:d=programDur,format=yuv420p [base]
+
+2. 收集所有视频 clip,按 (trackIndex 升序, programStart 升序) 排序得到 z-list:
+   - 轨号小的在底,轨号大的在顶
+   - 同轨道内按时间(同一轨道下 clip 不重叠,排序顺序对像素无影响,但保持稳定)
+
+3. 对每个 video clip 生成 segment:
+   [iv:v]
+     trim=start=sStart:end=sEnd,
+     setpts=PTS-STARTPTS+programStart/TB,    // ★ 关键:把 segment 的 PTS 平移到 programStart
+     scale=W:H,                              // 缩到 transform.W × transform.H
+     setsar=1,
+     fps=FR,                                 // 统一帧率,避免下游 overlay 帧对齐异常
+     format=yuva420p                         // alpha 兼容
+   [seg_k]
+
+4. 平铺 overlay 链:
+   [base][seg_0]   overlay=x=X0:y=Y0:enable='between(t,p_start_0,p_end_0)':eof_action=pass [v_0]
+   [v_0][seg_1]    overlay=x=X1:y=Y1:enable='between(t,p_start_1,p_end_1)':eof_action=pass [v_1]
+   ...
+   [v_{N-2}][seg_{N-1}] overlay=...:eof_action=pass [V]
+
+5. 音频路径不变(沿用 v0.5.0):per-track concat → 全局 amix → -map [A]
+```
+
+关键 filter 参数:
+
+| 参数 | 取值 | 理由 |
+|------|------|------|
+| `setpts=PTS-STARTPTS+programStart/TB` | 把 segment 的零点搬到 programStart | overlay 按 PTS 时间合成,segment 必须落在正确的时间窗。常见错误是只用 `setpts=PTS-STARTPTS` 让所有 segment 都从 0 开始,结果全部叠在画布开头 |
+| `enable='between(t,start,end)'` | gating | 即便 segment PTS 已正确,enable 仍是显式安全网,避免 overlay 在 segment 末帧后"卡住最后一帧" |
+| `eof_action=pass` | 默认 `repeat`(用最后一帧)→ 改 `pass`(透传 base) | 不让单个 segment 完帧后继续盖在底层上;配合 enable 双保险 |
+| `format=yuva420p`(segment 端) + `format=yuv420p`(base 端) | alpha 链路 | overlay 默认 alpha-aware,segment 必须有 alpha 通道才能让 base 透出。base 是 yuv420p 不带 alpha 也没关系,overlay 的输出会保留 base 的像素格式 |
+| `fps=FR`(segment 端) | 统一帧率 | 避免 25fps 源 + 30fps 画布 overlay 时丢帧/卡帧 |
+
+#### 12.3.2 单轨 / 单 clip 退化
+
+| 情况 | 行为 |
+|------|------|
+| 0 video clip | 跳过 video filter chain;不 `-map [V]`(沿用 v0.5.0) |
+| 1 video clip,且 transform = 全画布 | base + 1 个 overlay → `[V]`;比 v0.5.0 单轨直出多了一个 base。**性能损耗可忽略**(color 滤镜便宜),换来代码路径单一,不再为 N=1 写特例 |
+| ≥ 2 clips | 标准平铺 overlay 链 |
+
+如果 v0.5.0 单轨直出的"零 overlay 路径"对回归基线测试很重要,可以保留 N=1 的 fast path(`[V_0]` 直接 alias `[V]`),但**默认走 base + overlay 统一路径**,简化测试矩阵。
+
+#### 12.3.3 边界与错误
+
+| 情形 | 处理 |
+|------|------|
+| Clip transform 完全出画布 | 合法,filter graph 照常生成,overlay 输出零像素 |
+| Clip transform 部分出画布 | 合法,overlay 自动裁剪(ffmpeg 行为) |
+| Canvas FR 不是源 FR 的整数倍 | `fps=FR` 在 segment 端处理,接受丢帧/插帧 |
+| 旧工程(无 canvas / transform) | Migrate 已填上,export 路径看到的永远是合法值 |
+| 视频轨开头留空 | 沿用 v0.5.0:逐条 error 带 `videoTracks[i]` |
+| 跨源不同分辨率 | 不再像 v0.5.0 那样统一 scale+pad,**每个 clip 按自己的 transform.W × transform.H scale**,自然适配 |
+| 单 source 被多个 clip 引用(同一时间窗交叠引用同一 source 的不同段) | filter graph 用 `[i:v]` 多次切片,filter_complex 支持(单条流多次 trim 在 ffmpeg 是合法的,内部会做必要的 split) |
+
+#### 12.3.4 测试矩阵(`multitrack/domain/export_test.go` 重写 / 增补)
+
+继承 v0.5.0 §5.3 全矩阵,**新增**:
+
+- [ ] 单视频轨单 clip + transform 全画布 → 与 v0.5.0 视觉等价
+- [ ] 单视频轨双 clip 时间不重叠 + 各自不同 transform → segment 各自正确摆位
+- [ ] 双视频轨各一 clip 时间相同 + 上层小窗(右下角 PIP)→ 下层主画面 + 右下角小窗
+- [ ] 双视频轨上层完全覆盖下层 → 等价 v0.5.0 上层全屏(下层不可见)
+- [ ] 三视频轨 z-order(`[V0]→[V1]→[V2]`)→ overlay 链顺序正确
+- [ ] Clip transform 完全出画布 → segment 仍生成,overlay 输出空
+- [ ] Clip transform 部分出画布(X<0 或 X+W>canvasW)→ 不报错,filter 不裁
+- [ ] Canvas 非源整数倍帧率 → segment 端 `fps=FR` 出现
+- [ ] v0.5.0 工程(`schemaVersion=1`,无 canvas/transform)→ Migrate 后导出 = v0.5.0 字节(回归基线)
+- [ ] Canvas W/H/FR 越界 → Validate 报错
+- [ ] Transform W/H ≤ 0 → Validate 报错
+
+### 12.4 前端预览端的画布与变换框(v0.5.1)
+
+#### 12.4.1 预览容器结构
+
+```vue
+<!-- MultitrackPreview.vue 草图 -->
+<template>
+  <div class="preview-shell relative h-full flex items-center justify-center bg-black">
+    <!-- 画布盒:等比缩放进可视区,保持 aspectRatio = canvasW / canvasH -->
+    <div class="preview-canvas relative" :style="canvasBoxStyle">
+      <video ref="vMain" class="absolute inset-0 w-full h-full object-fill" />
+      <audio v-for="(_, i) in audioTracks" :key="i" :ref="el => aRefs[i] = el" />
+
+      <!-- 选中 clip 的变换框(v0.5.1) -->
+      <TransformOverlay
+        v-if="selectedClipTransform"
+        :canvas="store.project.canvas"
+        :transform="selectedClipTransform"
+        @update="onTransformUpdate"
+        @commit="onTransformCommit"
+      />
+    </div>
+  </div>
+</template>
+```
+
+`canvasBoxStyle` 计算:
+
+```ts
+const canvasBoxStyle = computed(() => {
+  const { width: cw, height: ch } = store.project.canvas
+  // 父容器尺寸由 ResizeObserver 持续监听 → boxW / boxH
+  const sx = boxW.value / cw
+  const sy = boxH.value / ch
+  const s = Math.min(sx, sy)
+  return {
+    width: `${cw * s}px`,
+    height: `${ch * s}px`,
+  }
+})
+```
+
+预览端的 `<video>` 仍走 v0.5.0 的"显示当前 playhead 下的顶层激活源"近似,但因为现在画布有自定义尺寸,`object-fit` 改为 `object-fill`(把源拉伸到画布盒),不再是 `contain`。**多轨叠加预览仍只显示顶层**,UI 提示"预览仅显示顶层视频轨;PIP 效果以导出为准"(v0.5.0 已有的提示沿用)。
+
+#### 12.4.2 TransformOverlay 组件
+
+新组件 `web/src/components/multitrack/TransformOverlay.vue`:
+
+- 绝对定位在 `.preview-canvas` 内部,坐标按 `transform / canvas` 比例换算到容器像素
+- 边线 1px `accent` 色;角手柄 12×12 圆点,边手柄 12×8 矩形
+- 拖拽事件:
+  - 中心区域 → 平移 (dx, dy);按 Shift 锁单轴
+  - 角手柄 → 同时改 (X, Y, W, H);按 Shift 锁纵横比;按 Alt 以中心缩放
+  - 边手柄 → 单边改 W 或 H
+- 拖拽期间 `@update` 实时发出 transform 草稿(本地 state,不入撤销栈),松开发 `@commit`(push 撤销栈)
+- 像素 → canvas 坐标的换算用 `boxW / canvasW` 比例,需要 round 到整数
+
+接到 store:
+
+```ts
+// MultitrackView.vue 内
+function onTransformUpdate(t: Transform) {
+  // 直接改当前 selected clip 的 transform(本地,不 commit)
+  store.previewClipTransform(selectedClipId.value, t)
+}
+function onTransformCommit(t: Transform) {
+  // push 撤销栈 + 标 dirty + 触发 autosave
+  store.commitClipTransform(selectedClipId.value, t)
+}
+```
+
+#### 12.4.3 画布设置模态
+
+新组件 `web/src/components/multitrack/CanvasSettingsDialog.vue`:
+
+- 三个数字输入(W / H / FR)+ 预设按钮列表
+- 预设:`1920×1080@30 (1080p)`、`3840×2160@30 (4K UHD)`、`1080×1920@30 (竖屏 9:16)`、`使用源最大值`(等价 Migrate 兜底)
+- 确认前如果新画布会让任意 clip 变得"完全出画布",二次提示 + 可继续(v0.5.1 不强制 clamp)
+- 改画布等价一次 commit(push 撤销栈,因为 canvas 也是工程状态)
+
+#### 12.4.4 Inspector 面板
+
+新组件 `web/src/components/multitrack/MultitrackInspector.vue`:
+
+- 折叠到右栏边缘窄条(36px),点开 240–280px 宽
+- 内容分两段:**画布**(始终可见)+ **选中 clip**(条件显示)
+- 数字输入失焦或回车提交,提交触发 `commitClipTransform`(同变换框 onCommit)
+- 与 `ExportSidebar` 互斥:`exportSidebarOpen` 时整体隐藏
+
+### 12.5 状态机改动(`stores/multitrack.ts`)
+
+```ts
+// 新增 actions:
+function setCanvas(canvas: Canvas) {
+  pushHistory()
+  project.value!.canvas = canvas
+  dirty.value = true
+}
+
+// 草稿模式(拖手柄期间):不入栈,不 dirty
+function previewClipTransform(clipId: string, t: Transform) {
+  const clip = findClip(clipId)
+  if (!clip) return
+  clip.transform = t
+  // 不 push,不标 dirty(预览态)
+}
+
+// 提交模式(松开手柄 / 数字框失焦):入栈 + dirty
+function commitClipTransform(clipId: string, t: Transform) {
+  pushHistory()
+  const clip = findClip(clipId)
+  if (!clip) return
+  clip.transform = t
+  dirty.value = true
+}
+```
+
+⚠ **草稿与提交分离**是关键模式:拖手柄过程每帧改 50+ 次 transform,如果都进撤销栈会爆;只在松开时入栈一次。这是 v0.5.0 clip 拖拽已经在用的模式([useTimelineDrag](../../../web/src/composables/timeline/useTimelineDrag.ts))。
+
+撤销栈快照(`useUndoStack`)需要把 `canvas` 加进 snapshot 函数:
+
+```ts
+const undo = useUndoStack({
+  snapshot: () => ({
+    canvas: project.value!.canvas,
+    videoTracks: project.value!.videoTracks,
+    audioTracks: project.value!.audioTracks,
+  }),
+  apply: (snap) => {
+    project.value!.canvas = snap.canvas
+    project.value!.videoTracks = snap.videoTracks
+    project.value!.audioTracks = snap.audioTracks
+  },
+})
+```
+
+### 12.6 API 契约变更
+
+无新增端点。已有端点的 body / response 自动跟 schema 走:
+
+| 端点 | 变化 |
+|------|------|
+| `GET /api/multitrack/projects/:id` | 响应 `Project` 多 `canvas` 字段;`videoTracks[].clips[]` 多 `transform` 字段 |
+| `PUT /api/multitrack/projects/:id` | 同上,前端发什么后端存什么(经 Migrate + Validate) |
+| `POST /api/multitrack/export` | 后端用 `Project.Canvas` 装 filter graph;dryRun 返回的命令也按 v0.5.1 格式 |
+
+向后兼容:打开 v0.5.0 工程文件 → 后端 Migrate 加上 canvas + transform → 第一次保存就升到 v2。
+
+### 12.7 共享层影响评估
+
+| 共享模块 | 受影响 | 说明 |
+|---------|--------|------|
+| `editor/common/domain/Clip` | ❌ 不动 | Transform 在 multitrack 自己的 Clip 上 |
+| `editor/common/domain/BuildVideoTrackFilter` | ❌ 不动 | 单视频不需要画布概念,继续用 |
+| `editor/common/domain/PlanSegments` | ❌ 不动 | 时间维度算法,与空间无关 |
+| 单视频 `editor/` | ❌ 不动 | 单视频 Tab 视觉与导出零回归(强制约束) |
+| `components/timeline-shared/` | ❌ 不动 | 时间轴不可视化空间属性 |
+| `composables/timeline/useUndoStack` | ⚠ snapshot 函数变 | 多轨 store 自己管,共享 composable 接口不变 |
+| `MultitrackPreview.vue` | ✓ 改造 | §12.4.1 |
+| `MultitrackTopBar.vue` | ✓ 加按钮 | "画布: ... " 入口 |
+| `multitrack/domain/{project,clip,filter,export}.go` | ✓ 改造 | §12.2 / §12.3 |
+| `multitrack/domain/{project,export}_test.go` | ✓ 重写 | §12.3.4 |
+
+### 12.8 风险与已知妥协
+
+| 风险 | 妥协 / 应对 |
+|------|------|
+| `setpts` PTS 平移在边界条件下可能偏 1 帧 | 测例覆盖 `programStart` 不是整帧的情况(如 0.033s),核对 ffprobe 输出帧数 |
+| `format=yuva420p` 编码到 `yuv420p` 的损耗(主流 mp4 不存 alpha)| overlay 在 base 处合成后输出仍是 yuv420p,只是 segment 中间过程带 alpha;最终编码无 alpha,无损耗 |
+| `eof_action=pass` 在某些 ffmpeg 版本不存在 | 项目嵌入的 ffmpeg 版本(见 [internal/embedded/](../../../internal/embedded/))支持;首个 M 末做版本验证 |
+| 多 clip 平铺 overlay 链长度爆 | 100 clip → 100 节 overlay,filter 长度 ~10KB,远低于命令行长度上限。超 100 时已有 `-filter_complex_script` 路径(沿用 v0.5.0 §10 的应对) |
+| 预览端不真合成,与导出不一致 | 沿用 v0.5.0 提示;变换框给出框选辅助 / 数字精确反馈;真预览合成留 v2 多 `<video>` 同步方案 |
+| 用户改画布让 clip 出界后困惑 | UI 在 clip 上画"⚠ 不可见"角标 + Inspector "重置为全画布"快捷;不强制自动 clamp(避免数据丢失) |
+| transform 整数像素粒度不够精细 | v0.5.1 锁整数(避免浮点累积误差);v2 引入百分比 / 浮点像素时再考虑 |
+
+### 12.9 各 M 交付边界(简版,详见 [milestones/feature-v0.5.1_multitrack-scale-video.md](../../milestones/feature-v0.5.1_multitrack-scale-video.md))
+
+| M | 交付 | 进入条件 |
+|---|------|---------|
+| **M1** PRD | [product.md §12](product.md) | — |
+| **M2** 技术设计 | 本节(§12) | M1 完成 |
+| **M3** 后端数据模型 + filter 重写 | `Canvas` / `Transform` 进 `multitrack/domain/`;Migrate v1→v2 + 旧工程零回归;`BuildExportArgs` 切到 base + 平铺 overlay 链;`export_test.go` 矩阵覆盖(含 v0.5.0 兼容回归);`go test ./...` + `CGO_ENABLED=0 go test ./...` 双绿 | M2 完成 |
+| **M4** 前端工程画布 UI | `CanvasSettingsDialog.vue` + 顶栏入口;`MultitrackPreview` 容器变成画布盒;新建工程默认 1920×1080;打开旧工程 Migrate 透传 canvas;改画布触发 dirty + autosave + 撤销栈 | M3 完成 |
+| **M5** 前端 clip 变换 UI(变换框 + Inspector) | `TransformOverlay.vue`(8 手柄 + 中心拖拽 + Shift/Alt 修饰);`MultitrackInspector.vue`(数字输入 + 重置按钮);store `previewClipTransform` / `commitClipTransform` 草稿/提交模式;键盘箭头微调 | M4 完成 |
+| **M6** 收尾 + 归档 | 用户手测清单全过(v0.5.0 旧工程零回归 + 新建 PIP 导出 + 改画布出界提示 + 撤销重做);`web/dist/` 重建;版本号 bump v0.5.1;归档 `git mv` + 主索引切换 + roadmap 加行 | M5 完成 |
+
+> **回归基线**:M3 末跑 v0.5.0 的最后一个测试工程,导出结果与 v0.5.0 commit `6d739a5` 时**视觉相同**(允许字节差异 — Migrate 注入了 canvas/transform 默认值导致 filter 多 base 节点,但视觉结果一致)。如果坚持字节相同,可以为"v1 工程 + 默认值不变"加一条 fast path(N=1 全画布 → 走 v0.5.0 单轨直出),M3 决策。

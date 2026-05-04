@@ -22,7 +22,7 @@
 
 | 分支 | 待办文件 | 当前 M |
 |------|---------|--------|
-| `feature-v0.5.0/multitrack-editor` | [feature-v0.5.0_multitrack-editor.md](feature-v0.5.0_multitrack-editor.md) | M3 后端共享层抽取 |
+| `feature-v0.5.1/multitrack-scale-video` | [feature-v0.5.1_multitrack-scale-video.md](feature-v0.5.1_multitrack-scale-video.md) | M3 后端数据模型 + filter 重写(待启动) |
 
 ## 模板
 
