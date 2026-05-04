@@ -160,8 +160,8 @@ func TestBuildExportArgs_SingleVideoSingleAudio(t *testing.T) {
 
 // TestBuildExportArgs_SingleVideoTrackTwoClips: two non-overlapping clips
 // with different transforms on the same video track → two segments + two
-// overlays. Lower track index = bottom; same-track clips sort by
-// programStart for stable filter strings.
+// overlays. Same-track clips sort by programStart for stable filter
+// strings (z-order convention only differentiates between tracks).
 func TestBuildExportArgs_SingleVideoTrackTwoClips(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks[0].Clips = []Clip{
@@ -187,15 +187,16 @@ func TestBuildExportArgs_SingleVideoTrackTwoClips(t *testing.T) {
 	}
 }
 
-// TestBuildExportArgs_PipTwoTracks: classic Picture-in-Picture — the second
-// (upper) video track holds a small window placed in the bottom-right
-// corner, the first (bottom) track holds a full-screen clip. Lower track
-// index renders below; the upper track's segment becomes the PIP window.
+// TestBuildExportArgs_PipTwoTracks: classic Picture-in-Picture — the first
+// (top) video track (lower index = top of z, displayed at the top of the
+// timeline column) holds a small window in the bottom-right corner; the
+// second (bottom) track holds a full-screen clip. The full-screen segment
+// is composited first (over base), the PIP last (on top of z).
 func TestBuildExportArgs_PipTwoTracks(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClipT("v1", "s1", 0, 10, 0, 0, 0, 1920, 1080)}},   // bottom: full-screen
-		{ID: "vt2", Clips: []Clip{mtClipT("v2", "s2", 0, 10, 0, 1440, 720, 480, 360)}}, // top: small PIP, bottom-right
+		{ID: "vt1", Clips: []Clip{mtClipT("v1", "s1", 0, 10, 0, 1440, 720, 480, 360)}}, // top of z: small PIP
+		{ID: "vt2", Clips: []Clip{mtClipT("v2", "s2", 0, 10, 0, 0, 0, 1920, 1080)}},     // bottom of z: full-screen
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -203,10 +204,11 @@ func TestBuildExportArgs_PipTwoTracks(t *testing.T) {
 		t.Fatal(err)
 	}
 	filter := filterOf(t, args)
-	// Two segments — bottom track's first (seg_0), top's PIP (seg_1).
+	// Two segments — bottom-of-z (vt2 full-screen) emits first as seg_0,
+	// top-of-z (vt1 PIP) last as seg_1.
 	wantOrder := []string{
-		"scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]", // bottom track
-		"scale=480:360,setsar=1,fps=30,format=yuva420p[seg_1]",   // PIP
+		"scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]", // bottom of z
+		"scale=480:360,setsar=1,fps=30,format=yuva420p[seg_1]",   // PIP (top of z)
 		"[base][seg_0]overlay=x=0:y=0:",
 		"[v_0][seg_1]overlay=x=1440:y=720:",
 		":eof_action=pass[V]",
@@ -223,15 +225,16 @@ func TestBuildExportArgs_PipTwoTracks(t *testing.T) {
 }
 
 // TestBuildExportArgs_TwoTracksUpperFullCovers: v0.5.0 visual equivalence
-// when both clips are full-canvas and the upper track is opaque (no alpha
-// transparency in the source). The bottom should be invisible — verified
-// by the overlay chain order; we don't assert pixel output here, just the
-// chain shape.
+// when both clips are full-canvas and the top-of-z track is opaque (no
+// alpha transparency in the source). The bottom-of-z should be invisible
+// — verified by the overlay chain order; we don't assert pixel output
+// here, just the chain shape. Convention: vt1 (lower index) = top of z,
+// vt2 (higher index) = bottom of z.
 func TestBuildExportArgs_TwoTracksUpperFullCovers(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
-		{ID: "vt2", Clips: []Clip{mtClip("v2", "s2", 0, 10, 0)}},
+		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}}, // top of z
+		{ID: "vt2", Clips: []Clip{mtClip("v2", "s2", 0, 10, 0)}}, // bottom of z
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -246,23 +249,33 @@ func TestBuildExportArgs_TwoTracksUpperFullCovers(t *testing.T) {
 	if !strings.Contains(filter, "scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_1]") {
 		t.Errorf("missing seg_1 full-canvas scale: %s", filter)
 	}
-	// Bottom (vt1) overlaid first onto base; top (vt2) overlaid onto v_0.
+	// Bottom of z (vt2, source s2) emits first as seg_0; top of z (vt1,
+	// source s1) emits last as seg_1.
+	if !strings.Contains(filter, "[1:v]trim=start=0:end=10,setpts=PTS-STARTPTS+0/TB,scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]") {
+		t.Errorf("expected vt2 (bottom of z, input 1) as seg_0: %s", filter)
+	}
+	if !strings.Contains(filter, "[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS+0/TB,scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_1]") {
+		t.Errorf("expected vt1 (top of z, input 0) as seg_1: %s", filter)
+	}
 	if !strings.Contains(filter, "[base][seg_0]overlay=x=0:y=0:") {
-		t.Errorf("expected vt1 segment over base: %s", filter)
+		t.Errorf("expected bottom-of-z segment over base: %s", filter)
 	}
 	if !strings.Contains(filter, "[v_0][seg_1]overlay=x=0:y=0:") {
-		t.Errorf("expected vt2 segment over v_0: %s", filter)
+		t.Errorf("expected top-of-z segment over v_0: %s", filter)
 	}
 }
 
 // TestBuildExportArgs_ThreeTrackZOrder: three tracks → three segments,
-// chain order = (base→seg_0)→seg_1→seg_2 with seg_0 at bottom.
+// chain order = (base→seg_0)→seg_1→seg_2. Convention: lower track index =
+// top of z, so seg_0 = vt3 (highest index, bottom), seg_2 = vt1 (lowest
+// index, top). Each clip's trim window is unique so we can verify which
+// track ended up where in the chain by source-time signature.
 func TestBuildExportArgs_ThreeTrackZOrder(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
-		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 20, 30, 0)}},
-		{ID: "vt3", Clips: []Clip{mtClip("v3", "s1", 40, 50, 0)}},
+		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},   // top of z   → seg_2
+		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 20, 30, 0)}},  // middle     → seg_1
+		{ID: "vt3", Clips: []Clip{mtClip("v3", "s1", 40, 50, 0)}},  // bottom of z→ seg_0
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -274,6 +287,12 @@ func TestBuildExportArgs_ThreeTrackZOrder(t *testing.T) {
 		"[base][seg_0]overlay=",
 		"[v_0][seg_1]overlay=",
 		"[v_1][seg_2]overlay=",
+		// vt3 (bottom of z) emits first as seg_0 → trim 40..50.
+		"trim=start=40:end=50,setpts=PTS-STARTPTS+0/TB,scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]",
+		// vt2 in the middle → trim 20..30.
+		"trim=start=20:end=30,setpts=PTS-STARTPTS+0/TB,scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_1]",
+		// vt1 (top of z) emits last as seg_2 → trim 0..10.
+		"trim=start=0:end=10,setpts=PTS-STARTPTS+0/TB,scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_2]",
 	}
 	for _, w := range want {
 		if !strings.Contains(filter, w) {

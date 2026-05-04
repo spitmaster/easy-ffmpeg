@@ -9,6 +9,7 @@ import {
   type MultitrackProject,
   type MultitrackProjectSummary,
   type MultitrackSource,
+  type MultitrackTransform,
   type MultitrackVideoTrack,
 } from '@/api/multitrack'
 import type { RangeSelection } from '@/types/timeline'
@@ -283,6 +284,41 @@ export const useMultitrackStore = defineStore('multitrack', () => {
   }
 
   /**
+   * Reorder a track within its kind. `toIdx` is the *insertion slot*
+   * (0..tracks.length); for example moving a video track from index 2 to
+   * insertion-slot 0 puts it at the top of the column. No-op when the
+   * source/dest indices are out of range or refer to the same slot. One
+   * history entry per drop. Selection trackIds don't change so no fixup.
+   */
+  function reorderVideoTrack(fromIdx: number, toIdx: number) {
+    if (!project.value) return
+    const tracks = project.value.videoTracks.slice()
+    if (fromIdx < 0 || fromIdx >= tracks.length) return
+    if (toIdx < 0 || toIdx > tracks.length) return
+    // After splicing the source out, an insertion slot above its original
+    // position stays as-is; one below shifts up by one.
+    const adjusted = toIdx > fromIdx ? toIdx - 1 : toIdx
+    if (adjusted === fromIdx) return
+    const [moved] = tracks.splice(fromIdx, 1)
+    tracks.splice(adjusted, 0, moved)
+    applyProjectPatch({ videoTracks: tracks })
+    undoStack.push()
+  }
+
+  function reorderAudioTrack(fromIdx: number, toIdx: number) {
+    if (!project.value) return
+    const tracks = project.value.audioTracks.slice()
+    if (fromIdx < 0 || fromIdx >= tracks.length) return
+    if (toIdx < 0 || toIdx > tracks.length) return
+    const adjusted = toIdx > fromIdx ? toIdx - 1 : toIdx
+    if (adjusted === fromIdx) return
+    const [moved] = tracks.splice(fromIdx, 1)
+    tracks.splice(adjusted, 0, moved)
+    applyProjectPatch({ audioTracks: tracks })
+    undoStack.push()
+  }
+
+  /**
    * Set the project canvas (W/H/FR). Treated like any other commit-grade
    * edit: applies the patch, marks dirty, autosaves, pushes one history
    * entry. Out-of-bounds clips after the change are intentionally left
@@ -292,6 +328,46 @@ export const useMultitrackStore = defineStore('multitrack', () => {
   function setCanvas(canvas: MultitrackCanvas) {
     if (!project.value) return
     applyProjectPatch({ canvas: { ...canvas } })
+    undoStack.push()
+  }
+
+  /**
+   * Live preview of a video clip's transform during a drag (8-handle box,
+   * arrow-key nudge, Inspector typing). Mutates in place — no history
+   * push, no dirty flag, no autosave schedule. The TransformOverlay /
+   * Inspector pump this on every mouse move; commitClipTransform is the
+   * one that locks the change in.
+   *
+   * No-op when the track / clip can't be found (stale selection).
+   */
+  function previewClipTransform(trackId: string, clipId: string, t: MultitrackTransform) {
+    if (!project.value) return
+    const track = project.value.videoTracks.find((tr) => tr.id === trackId)
+    if (!track) return
+    const clip = track.clips.find((c) => c.id === clipId)
+    if (!clip) return
+    clip.transform = { ...t }
+  }
+
+  /**
+   * Commit a video clip transform: snapshot-style replace through
+   * applyProjectPatch (so the autosave / dirty pipeline fires once) and
+   * push one history entry. Drag handlers call this on mouseup; the
+   * Inspector calls this on input blur or Enter.
+   */
+  function commitClipTransform(trackId: string, clipId: string, t: MultitrackTransform) {
+    if (!project.value) return
+    const next = project.value.videoTracks.map((tr) =>
+      tr.id === trackId
+        ? {
+            ...tr,
+            clips: tr.clips.map((c) =>
+              c.id === clipId ? { ...c, transform: { ...t } } : c,
+            ),
+          }
+        : tr,
+    )
+    applyProjectPatch({ videoTracks: next })
     undoStack.push()
   }
 
@@ -410,14 +486,38 @@ export const useMultitrackStore = defineStore('multitrack', () => {
   })
 
   /**
-   * Find the active clip on the topmost (highest index) video track at the
+   * Resolve the first selection that lives on a video track to the actual
+   * clip + track ids, for the TransformOverlay / Inspector. Returns null
+   * when nothing is selected, the selection is stale, or the selected
+   * clip is on an audio track (transform doesn't apply there).
+   */
+  const selectedVideoClip = computed<{ trackId: string; clipId: string; clip: MultitrackClip } | null>(() => {
+    if (!project.value || selection.value.length === 0) return null
+    for (const sel of selection.value) {
+      const track = project.value.videoTracks.find((t) => t.id === sel.trackId)
+      if (!track) continue
+      const clip = track.clips.find((c) => c.id === sel.clipId)
+      if (!clip) continue
+      return { trackId: sel.trackId, clipId: sel.clipId, clip }
+    }
+    return null
+  })
+
+  /**
+   * Find the active clip on the topmost (lowest index) video track at the
    * given playhead. Returns null when no video track has a clip there.
    * The preview composable uses this to pick which source to stream.
+   *
+   * z-order convention (v0.5.1+): lower track index = on top. The timeline
+   * UI lists track index 0 at the top of the column; aligning z-order with
+   * the visible row order is what the user expects ("the track shown at
+   * the top covers the ones below"). Export's overlay chain mirrors the
+   * same convention — see multitrack/domain/export.go.
    */
   function topVideoActive(t: number): MultitrackTopVideoActive | null {
     if (!project.value) return null
     const tracks = project.value.videoTracks
-    for (let i = tracks.length - 1; i >= 0; i--) {
+    for (let i = 0; i < tracks.length; i++) {
       const tr = tracks[i]
       if (tr.hidden) continue
       const clip = clipAt(tr.clips, t)
@@ -441,6 +541,39 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     const src = sourcesById.value[clip.sourceId]
     if (!src) return null
     return { clip, source: src, srcTime: clip.sourceStart + (t - clip.programStart) }
+  }
+
+  /**
+   * Find the active clip on the given video track at the playhead. The
+   * multi-`<video>` preview uses this to drive each track's element
+   * independently — same shape as `audioActive` but for video sources.
+   * Returns null when the track is hidden, has no clip at t, or its
+   * source is missing.
+   */
+  function videoActive(track: MultitrackVideoTrack, t: number): { clip: MultitrackClip; source: MultitrackSource; srcTime: number } | null {
+    if (!project.value || track.hidden) return null
+    const clip = clipAt(track.clips, t)
+    if (!clip) return null
+    const src = sourcesById.value[clip.sourceId]
+    if (!src) return null
+    return { clip, source: src, srcTime: clip.sourceStart + (t - clip.programStart) }
+  }
+
+  /**
+   * Index of the topmost active video track at time t (lowest non-hidden
+   * track index with a clip there). Returns -1 if no track has an active
+   * clip. The multi-`<video>` preview uses this to pick which element is
+   * the master clock — its native timeupdate drives the playhead, and
+   * other active tracks follow via rAF currentTime correction.
+   */
+  function topVideoActiveIndex(t: number): number {
+    if (!project.value) return -1
+    const tracks = project.value.videoTracks
+    for (let i = 0; i < tracks.length; i++) {
+      if (tracks[i].hidden) continue
+      if (clipAt(tracks[i].clips, t)) return i
+    }
+    return -1
   }
 
   // Auto-clamp the playhead when total duration shrinks (after delete /
@@ -469,6 +602,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     // derived
     programDuration,
     sourcesById,
+    selectedVideoClip,
     // actions
     fetchList,
     createNew,
@@ -482,7 +616,11 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     addAudioTrack,
     removeVideoTrack,
     removeAudioTrack,
+    reorderVideoTrack,
+    reorderAudioTrack,
     setCanvas,
+    previewClipTransform,
+    commitClipTransform,
     setAudioTrackVolume,
     moveClipAcrossTracks,
     appendClip,
@@ -492,6 +630,8 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     undo: undoStack.undo,
     redo: undoStack.redo,
     topVideoActive,
+    topVideoActiveIndex,
+    videoActive,
     audioActive,
     flushSave: autosave.flush,
     scheduleSave: autosave.schedule,

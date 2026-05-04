@@ -1,7 +1,7 @@
 {
   "name": "easy-ffmpeg-web",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "Easy FFmpeg frontend (Vue 3 + Vite). Build output goes to web/dist/, embedded by easy-ffmpeg/web (embed.go).",
   "scripts": {

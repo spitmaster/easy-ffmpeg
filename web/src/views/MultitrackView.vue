@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, toRef, useTemplateRef } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, toRef, useTemplateRef } from 'vue'
 import {
   multitrackApi,
   SOURCE_VIDEO,
@@ -23,6 +23,7 @@ import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
 import { Path } from '@/utils/path'
 import { findMissingSources } from '@/utils/validateSources'
 import CanvasSettingsDialog from '@/components/multitrack/CanvasSettingsDialog.vue'
+import MultitrackInspector from '@/components/multitrack/MultitrackInspector.vue'
 import MultitrackLibrary from '@/components/multitrack/MultitrackLibrary.vue'
 import MultitrackPreview from '@/components/multitrack/MultitrackPreview.vue'
 import MultitrackToolbar from '@/components/multitrack/MultitrackToolbar.vue'
@@ -62,6 +63,7 @@ const ops = useMultitrackOps()
 const projectsOpen = ref(false)
 const canvasOpen = ref(false)
 const importing = ref(false)
+const inspectorCollapsed = ref(false)
 
 const libraryRef = useTemplateRef<{ setError: (msg: string) => void }>('libraryRef')
 const previewRef = useTemplateRef<{ play: () => void; pause: () => void; toggle: () => void; seek: (t: number) => void }>('previewRef')
@@ -123,6 +125,110 @@ const audioTracksData = computed<TrackData[]>(() =>
 
 function selectedIdsForTrack(trackId: string): string[] {
   return MultitrackSel.inTrack(store.selection, trackId)
+}
+
+// ---- Track reorder via label-drag ----
+//
+// Pressing the icon/label of a TimelineTrackLabel and dragging vertically
+// reorders that track among its same-kind siblings. The label emits
+// 'reorder-mousedown'; we attach document mousemove/mouseup, hit-test the
+// same-kind row under the cursor, and on mouseup commit via store.reorder*.
+//
+// Visual feedback:
+//   - Source row gets opacity-40 via the `dragging` prop on its label
+//   - A 2-px insertion indicator slides between rows in the labels column,
+//     positioned by reorderInsertY (computed from the cursor's slot index)
+
+interface ReorderState {
+  kind: 'video' | 'audio'
+  fromIdx: number
+  /** insertion slot 0..tracks.length; -1 = no valid drop target yet */
+  toIdx: number
+}
+const reorder = ref<ReorderState | null>(null)
+
+const reorderingTrackId = computed(() => {
+  if (!reorder.value) return null
+  const arr = reorder.value.kind === 'video' ? videoTracksData.value : audioTracksData.value
+  return arr[reorder.value.fromIdx]?.id ?? null
+})
+
+/** Y position (in the labels column's local coordinates) where the
+ *  insertion indicator should render. Returns null when no drop target
+ *  is valid (cursor outside the same-kind block). */
+const reorderInsertY = computed<number | null>(() => {
+  const r = reorder.value
+  if (!r || r.toIdx < 0) return null
+  const videoCount = videoTracksData.value.length
+  const audioCount = audioTracksData.value.length
+  // Labels column stack (top → bottom): [video rows][audio rows]
+  if (r.kind === 'video') {
+    if (r.toIdx > videoCount) return null
+    return r.toIdx * ROW_PX
+  }
+  if (r.toIdx > audioCount) return null
+  return videoCount * ROW_PX + r.toIdx * ROW_PX
+})
+
+function onLabelReorderMouseDown(
+  kind: 'video' | 'audio',
+  trackId: string,
+  ev: MouseEvent,
+) {
+  if (store.exportLocked) return
+  const arr = kind === 'video' ? videoTracksData.value : audioTracksData.value
+  const fromIdx = arr.findIndex((t) => t.id === trackId)
+  if (fromIdx < 0) return
+  ev.preventDefault()
+  reorder.value = { kind, fromIdx, toIdx: fromIdx }
+  document.addEventListener('mousemove', onReorderMouseMove)
+  document.addEventListener('mouseup', onReorderMouseUp, { once: true })
+  document.body.style.cursor = 'grabbing'
+}
+
+function onReorderMouseMove(ev: MouseEvent) {
+  const r = reorder.value
+  if (!r) return
+  const labels = labelsEl.value
+  const container = labels?.firstElementChild as HTMLElement | null
+  if (!labels || !container) return
+  const rect = container.getBoundingClientRect()
+  const y = ev.clientY - rect.top
+  const videoCount = videoTracksData.value.length
+  const audioCount = audioTracksData.value.length
+  const videoRegionEnd = videoCount * ROW_PX
+  const audioRegionEnd = videoRegionEnd + audioCount * ROW_PX
+  // Find which slot the cursor is over within its own kind. Slots are
+  // 0..count (count = "below the last row"). Outside the same-kind
+  // region → toIdx = -1 (no valid drop).
+  if (r.kind === 'video') {
+    if (y < 0 || y > videoRegionEnd) {
+      r.toIdx = -1
+    } else {
+      // Snap to nearest gap. Slot k sits at y = k * ROW_PX (top edge).
+      r.toIdx = Math.max(0, Math.min(videoCount, Math.round(y / ROW_PX)))
+    }
+  } else {
+    if (y < videoRegionEnd || y > audioRegionEnd) {
+      r.toIdx = -1
+    } else {
+      const local = y - videoRegionEnd
+      r.toIdx = Math.max(0, Math.min(audioCount, Math.round(local / ROW_PX)))
+    }
+  }
+}
+
+function onReorderMouseUp() {
+  document.removeEventListener('mousemove', onReorderMouseMove)
+  document.body.style.cursor = ''
+  const r = reorder.value
+  reorder.value = null
+  if (!r || r.toIdx < 0) return
+  if (r.kind === 'video') {
+    store.reorderVideoTrack(r.fromIdx, r.toIdx)
+  } else {
+    store.reorderAudioTrack(r.fromIdx, r.toIdx)
+  }
 }
 
 // Playhead visibility per splitScope.
@@ -649,6 +755,118 @@ function onCanvasSubmit(canvas: { width: number; height: number; frameRate: numb
   canvasOpen.value = false
 }
 
+// ---- Selected-clip nudge keyboard shortcuts (M5) ----
+//
+// Hooks into the document keydown stream BEFORE useTimelinePlayback's
+// listener so ArrowLeft / ArrowRight nudge the selected video clip's
+// transform instead of seeking. Capture phase + stopImmediatePropagation
+// is the trick — useTimelinePlayback's listener is bubble-phase and only
+// fires when our handler doesn't claim the event.
+//
+// Bindings (only when a video clip is selected and not in an editable):
+//   ←/→/↑/↓        nudge X / Y by 1px
+//   Shift + ←/→/↑/↓  nudge by 10px
+//   Ctrl + 0       reset to full canvas
+// Without a video selection or while the export is locked, we don't
+// claim the keys — playback's seek bindings continue to work as before.
+
+function isInEditable(target: EventTarget | null): boolean {
+  const a = target as HTMLElement | null
+  if (!a) return false
+  const tag = a.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || a.isContentEditable
+}
+
+function nudgeSelected(dx: number, dy: number): boolean {
+  const sel = store.selectedVideoClip
+  if (!sel) return false
+  const t = sel.clip.transform
+  store.commitClipTransform(sel.trackId, sel.clipId, {
+    x: t.x + dx,
+    y: t.y + dy,
+    w: t.w,
+    h: t.h,
+  })
+  return true
+}
+
+function resetSelectedToFullCanvas(): boolean {
+  const sel = store.selectedVideoClip
+  const c = store.project?.canvas
+  if (!sel || !c) return false
+  const cur = sel.clip.transform
+  if (cur.x === 0 && cur.y === 0 && cur.w === c.width && cur.h === c.height) return true
+  store.commitClipTransform(sel.trackId, sel.clipId, { x: 0, y: 0, w: c.width, h: c.height })
+  return true
+}
+
+function onTransformKeyCapture(ev: KeyboardEvent) {
+  if (store.exportLocked) return
+  if (isInEditable(ev.target)) return
+  // Ctrl+0 → reset (only when a video clip is selected; otherwise let
+  // the browser / other handlers see it).
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === '0') {
+    if (resetSelectedToFullCanvas()) {
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+    }
+    return
+  }
+  // Arrow nudge — only intercept when there's a video clip to nudge,
+  // otherwise playback gets to see Arrow* for seek-to-boundary.
+  if (!store.selectedVideoClip) return
+  const step = ev.shiftKey ? 10 : 1
+  let handled = false
+  switch (ev.key) {
+    case 'ArrowLeft':
+      handled = nudgeSelected(-step, 0)
+      break
+    case 'ArrowRight':
+      handled = nudgeSelected(step, 0)
+      break
+    case 'ArrowUp':
+      handled = nudgeSelected(0, -step)
+      break
+    case 'ArrowDown':
+      handled = nudgeSelected(0, step)
+      break
+  }
+  if (handled) {
+    ev.preventDefault()
+    ev.stopImmediatePropagation()
+  }
+}
+
+function attachTransformKey() {
+  document.addEventListener('keydown', onTransformKeyCapture, { capture: true })
+}
+function detachTransformKey() {
+  document.removeEventListener('keydown', onTransformKeyCapture, { capture: true })
+}
+
+// Ctrl/Cmd + wheel outside the timeline scroll area would otherwise trigger
+// the browser's page-zoom (or trackpad pinch on macOS). The timeline's own
+// `@wheel="zoom.onWheel"` handles its own preventDefault, so we only step in
+// when the wheel event lands outside scrollEl. Capture-phase + passive:false
+// is required for preventDefault on wheel to actually take effect.
+function onGlobalWheel(ev: WheelEvent) {
+  if (!(ev.ctrlKey || ev.metaKey)) return
+  const scroll = scrollEl.value
+  const target = ev.target as Node | null
+  if (scroll && target && scroll.contains(target)) return
+  ev.preventDefault()
+}
+function attachGlobalWheel() {
+  document.addEventListener('wheel', onGlobalWheel, { capture: true, passive: false })
+}
+function detachGlobalWheel() {
+  document.removeEventListener('wheel', onGlobalWheel, { capture: true })
+}
+
+onActivated(() => { attachTransformKey(); attachGlobalWheel() })
+onDeactivated(() => { detachTransformKey(); detachGlobalWheel() })
+onBeforeUnmount(() => { detachTransformKey(); detachGlobalWheel() })
+
 </script>
 
 <template>
@@ -821,15 +1039,18 @@ function onCanvasSubmit(canvas: { width: number; height: number; frameRate: numb
               ref="labelsEl"
               class="w-40 shrink-0 overflow-hidden border-r border-border-base bg-bg-panel text-xs"
             >
-              <div class="flex flex-col">
+              <div class="relative flex flex-col">
                 <TimelineTrackLabel
                   v-for="t in videoTracksData"
                   :key="'lv-' + t.id"
                   kind="video"
                   :label="t.label ?? ''"
                   removable
+                  reorderable
+                  :dragging="reorderingTrackId === t.id"
                   :disabled="store.exportLocked"
                   @remove="onRemoveTrack('video', t.id)"
+                  @reorder-mousedown="(ev: MouseEvent) => onLabelReorderMouseDown('video', t.id, ev)"
                 />
                 <TimelineTrackLabel
                   v-for="t in audioTracksData"
@@ -838,13 +1059,25 @@ function onCanvasSubmit(canvas: { width: number; height: number; frameRate: numb
                   :label="t.label ?? ''"
                   :volume="t.volume ?? 1"
                   removable
+                  reorderable
+                  :dragging="reorderingTrackId === t.id"
                   :disabled="store.exportLocked"
                   @update:volume="(v: number) => onSetTrackVolume(t.id, v)"
                   @remove="onRemoveTrack('audio', t.id)"
+                  @reorder-mousedown="(ev: MouseEvent) => onLabelReorderMouseDown('audio', t.id, ev)"
                 />
                 <div v-if="videoTracksData.length + audioTracksData.length === 0" class="px-2 py-3 text-[11px] text-fg-muted">
                   从素材库点"+ 添加"建轨
                 </div>
+                <!-- Track-reorder insertion indicator. A 2px accent bar
+                     anchored at the gap between rows where dropping would
+                     land the dragged track. Hidden when the cursor is
+                     outside the same-kind region (toIdx = -1). -->
+                <div
+                  v-if="reorderInsertY !== null"
+                  class="pointer-events-none absolute left-0 right-0 z-20 h-0.5 -translate-y-1/2 bg-accent shadow-[0_0_4px_rgba(0,0,0,0.6)]"
+                  :style="{ top: reorderInsertY + 'px' }"
+                ></div>
               </div>
             </div>
 
@@ -957,6 +1190,18 @@ function onCanvasSubmit(canvas: { width: number; height: number; frameRate: numb
         <!-- /Region: TRACKS -->
       </div>
       <!-- /Editor column -->
+
+      <!-- Inspector: right rail for canvas + selected-clip transform.
+           Mutually exclusive with ExportSidebar (no transform editing
+           while ffmpeg renders), so v-show toggles on the export flag.
+           Inspector renders only when a project is open. -->
+      <MultitrackInspector
+        v-if="hasProject"
+        v-show="!exportFlow.sidebarOpen.value"
+        :collapsed="inspectorCollapsed"
+        @toggle="inspectorCollapsed = !inspectorCollapsed"
+        @open-canvas-dialog="canvasOpen = true"
+      />
 
       <!-- Right: export log sidebar (visible only during/after export). The
            ExportSidebar component lays itself out as an inset column —

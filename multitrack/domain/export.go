@@ -17,7 +17,12 @@ import (
 //   - Start a base canvas of project.Canvas dims:
 //     `color=c=black:s=CWxCH:r=FR:d=programDur,format=yuv420p[base]`
 //   - Collect every video clip across all tracks into one z-list, sorted by
-//     (trackIndex asc, programStart asc). Lower track index = bottom layer.
+//     (trackIndex desc, programStart asc). Higher track index = bottom layer
+//     (emitted first in the overlay chain), lower track index = top of z
+//     (emitted last). This mirrors the timeline UI: track index 0 sits at
+//     the top row of the column, and the user expects the visually-top row
+//     to be on top in z. The frontend's `topVideoActive` uses the same
+//     convention.
 //   - Each clip becomes one segment via BuildVideoSegment: trim + setpts
 //     (PTS shifted to programStart) + scale to the clip's transform.W×H +
 //     fps + yuva420p (alpha-aware).
@@ -170,7 +175,7 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 		}
 		sort.SliceStable(segs, func(i, j int) bool {
 			if segs[i].trackIx != segs[j].trackIx {
-				return segs[i].trackIx < segs[j].trackIx
+				return segs[i].trackIx > segs[j].trackIx
 			}
 			return segs[i].c.ProgramStart < segs[j].c.ProgramStart
 		})

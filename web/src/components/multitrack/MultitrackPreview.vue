@@ -1,38 +1,49 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import type { MultitrackTransform, MultitrackVideoTrack } from '@/api/multitrack'
 import { useMultitrackStore } from '@/stores/multitrack'
 import { useMultitrackPreview } from '@/composables/useMultitrackPreview'
+import TransformOverlay from '@/components/multitrack/TransformOverlay.vue'
 
 /**
  * Top-half preview pane.
  *
  * Layout: an outer "preview-shell" centers a "preview-canvas" box that
  * scales to fit the available area while preserving the project canvas's
- * aspect ratio (v0.5.1+). The <video> fills the canvas box with
- * object-fill — when a clip's source resolution differs from the canvas,
- * the preview stretches it to the canvas, matching the export's
- * "scale to transform W×H" behavior. Audio elements live unstyled inside
- * the box; useMultitrackPreview drives them.
+ * aspect ratio (v0.5.1+). Inside the canvas-box we render one `<video>`
+ * element per video track, positioned + sized via the track's currently
+ * active clip transform (X, Y, W, H in canvas coords → percentages of
+ * the canvas-box). Stacking: lower track index = higher z-index, mirroring
+ * the export overlay chain. Tracks with no active clip at the playhead
+ * are hidden (v-show:false) so they don't paint a stale frame on top.
  *
- * Strategy preserved from v0.5.0: only the topmost video track is shown;
- * cross-track composition (PIP / overlays) only takes effect at export.
- * A small "预览仅显示顶层视频轨" chip appears when ≥2 video clips are
- * active at the playhead.
+ * The canvas-box itself uses a checkerboard pattern (two greys, 16px
+ * cells) so the project's drawable area is visible against the black
+ * shell background even when no clip occupies a region. Audio elements
+ * live unstyled inside the box; useMultitrackPreview drives them.
+ *
+ * Clock arbitration is handled inside useMultitrackPreview: the topmost
+ * (lowest-index) active track's `<video>` is the master driving the
+ * playhead via timeupdate; the rest follow via rAF currentTime correction.
  */
 const store = useMultitrackStore()
-const videoRef = useTemplateRef<HTMLVideoElement>('videoRef')
+const videoRefs = ref<(HTMLVideoElement | null)[]>([])
 const shellEl = useTemplateRef<HTMLDivElement>('shellEl')
 const audioRefs = ref<(HTMLAudioElement | null)[]>([])
 
+const videoTracks = computed(() => store.project?.videoTracks ?? [])
 const audioTracks = computed(() => store.project?.audioTracks ?? [])
 const canvas = computed(() => store.project?.canvas ?? { width: 1920, height: 1080, frameRate: 30 })
 
-// Set audio refs in a manner that works with v-for + dynamic length.
+// Set refs in a manner that works with v-for + dynamic length.
+function setVideoRef(i: number, el: Element | null) {
+  videoRefs.value[i] = el as HTMLVideoElement | null
+}
 function setAudioRef(i: number, el: Element | null) {
   audioRefs.value[i] = el as HTMLAudioElement | null
 }
 
-const preview = useMultitrackPreview(videoRef, audioRefs, audioTracks)
+const preview = useMultitrackPreview(videoRefs, audioRefs, videoTracks, audioTracks)
 
 defineExpose({ play: preview.play, pause: preview.pause, toggle: preview.toggle, seek: preview.seek })
 
@@ -87,32 +98,92 @@ const canvasBoxStyle = computed(() => {
   }
 })
 
-// Top-layer notice: any time we have ≥2 visible video tracks with a clip
-// at playhead, only the topmost is shown. The notice only renders when
-// the stacking actually applies (≥2 active video clips at playhead).
-const stackedActive = computed(() => {
-  const p = store.project
-  if (!p) return false
-  let hits = 0
-  for (const t of p.videoTracks) {
-    if (t.hidden) continue
-    for (const c of t.clips) {
-      const e = c.programStart + (c.sourceEnd - c.sourceStart)
-      if (store.playhead + 1e-6 >= c.programStart && store.playhead < e - 1e-6) {
-        hits++
-        if (hits >= 2) return true
-        break // only one clip per track is active at any instant
-      }
-    }
+// Per-track style: position + size of the <video> inside the canvas-box,
+// derived from the track's currently active clip's transform. When the
+// track has no active clip at the playhead, `visible` is false and the
+// element gets v-show:false — keeps the DOM warm (preserves loaded src,
+// avoids preroll on next entry) without painting a stale frame.
+//
+// z-index convention (v0.5.1+): lower track index = top of z. We set
+// z-index = (N - i) so the array order maps directly: tracks[0] sits on
+// top of the stack, tracks[N-1] at the bottom.
+interface TrackVisual {
+  visible: boolean
+  style: Record<string, string>
+}
+function trackVisual(track: MultitrackVideoTrack, i: number, total: number): TrackVisual {
+  const cw = canvas.value.width
+  const ch = canvas.value.height
+  const active = store.videoActive(track, store.playhead)
+  if (!active || cw <= 0 || ch <= 0) {
+    return { visible: false, style: { zIndex: String(total - i) } }
   }
-  return false
+  const t = active.clip.transform
+  return {
+    visible: true,
+    style: {
+      left: `${(t.x / cw) * 100}%`,
+      top: `${(t.y / ch) * 100}%`,
+      width: `${(t.w / cw) * 100}%`,
+      height: `${(t.h / ch) * 100}%`,
+      zIndex: String(total - i),
+    },
+  }
+}
+
+const trackVisuals = computed<TrackVisual[]>(() => {
+  const tracks = videoTracks.value
+  const total = tracks.length
+  return tracks.map((tr, i) => trackVisual(tr, i, total))
 })
 
-// Keep audioRefs sized in sync with audioTracks so v-for ref callbacks
-// land in the right slots after track add / remove.
+// Keep videoRefs / audioRefs sized in sync so v-for ref callbacks land
+// in the right slots after track add / remove.
+watch(videoTracks, (tracks) => {
+  videoRefs.value.length = tracks.length
+})
 watch(audioTracks, (tracks) => {
   audioRefs.value.length = tracks.length
 })
+
+// ---- Selected-clip transform overlay (v0.5.1 / M5) ----
+//
+// The overlay only renders for video-track selections. Audio selections
+// don't have a transform concept; the store's selectedVideoClip filters
+// these out for us. Hide during export so the user can't reposition while
+// ffmpeg renders. The overlay sits above the video stack via z-30 — high
+// enough to clear any realistic video track count (videoStyle uses
+// zIndex = N - i, < 30 for any sane N) but lower than dialogs / modals
+// (z-40 for CanvasSettingsDialog/ExportDialog/ProjectsModal, z-50 for the
+// confirm modals), so opening a dialog while a clip is selected doesn't
+// leave the selection box on top.
+const overlayVisible = computed(
+  () => !!store.selectedVideoClip && !store.exportLocked,
+)
+
+function onTransformPreview(t: MultitrackTransform) {
+  const sel = store.selectedVideoClip
+  if (!sel) return
+  store.previewClipTransform(sel.trackId, sel.clipId, t)
+}
+
+function onTransformCommit(t: MultitrackTransform) {
+  const sel = store.selectedVideoClip
+  if (!sel) return
+  store.commitClipTransform(sel.trackId, sel.clipId, t)
+}
+
+// Click on a track's <video> to select that track's currently-active clip.
+// Only fires when the click lands on the visible <video> rectangle (so the
+// tinted-canvas background and gap regions don't accidentally select). The
+// TransformOverlay sits on top via z-30; clicks on its handles are caught
+// there before reaching the video, so resizing doesn't double-select.
+function onVideoClick(track: MultitrackVideoTrack) {
+  if (store.exportLocked) return
+  const active = store.videoActive(track, store.playhead)
+  if (!active) return
+  store.selection = [{ trackId: track.id, clipId: active.clip.id }]
+}
 </script>
 
 <template>
@@ -121,15 +192,24 @@ watch(audioTracks, (tracks) => {
     class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black"
   >
     <div
-      class="relative bg-black"
+      class="canvas-box relative"
       :style="canvasBoxStyle"
     >
+      <!-- Per-track <video> stack. Each track's element is positioned by
+           its current active clip's transform. Tracks with no active clip
+           are hidden via v-show so they don't paint a frame on top. -->
       <video
-        ref="videoRef"
+        v-for="(t, i) in videoTracks"
+        :key="t.id"
+        v-show="trackVisuals[i]?.visible"
+        :ref="(el) => setVideoRef(i, el as Element | null)"
         preload="auto"
         muted
-        class="absolute inset-0 h-full w-full object-fill"
+        class="absolute cursor-pointer object-fill"
+        :style="trackVisuals[i]?.style"
+        @click="onVideoClick(t)"
       ></video>
+
       <!-- Per-track audio elements. Hidden visually; useMultitrackPreview
            drives src / currentTime / play state for each. WebAudio routes
            each through its own GainNode so audio-track volume can exceed
@@ -141,11 +221,33 @@ watch(audioTracks, (tracks) => {
         preload="auto"
         style="display: none"
       ></audio>
-    </div>
 
-    <div
-      v-if="stackedActive"
-      class="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-2 py-0.5 text-[10px] text-white/80"
-    >预览仅显示顶层视频轨</div>
+      <!-- Selection box for the currently selected video clip (v0.5.1).
+           Draws above all <video> elements via z-index in the component. -->
+      <TransformOverlay
+        v-if="overlayVisible && store.selectedVideoClip"
+        :canvas="canvas"
+        :transform="store.selectedVideoClip.clip.transform"
+        @update="onTransformPreview"
+        @commit="onTransformCommit"
+      />
+    </div>
   </div>
 </template>
+
+<style scoped>
+/* Photoshop-style transparency checkerboard so the canvas-box reads as a
+   distinct surface against the black shell. Two greys (#2b2b2b / #1f1f1f)
+   alternate in 16px cells — clearly visible but not loud enough to fight
+   the video content drawn on top. */
+.canvas-box {
+  background-color: #2b2b2b;
+  background-image:
+    linear-gradient(45deg, #1f1f1f 25%, transparent 25%),
+    linear-gradient(-45deg, #1f1f1f 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1f1f1f 75%),
+    linear-gradient(-45deg, transparent 75%, #1f1f1f 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, 8px 0;
+}
+</style>

@@ -11,7 +11,7 @@ import AudioVolumePopover from './AudioVolumePopover.vue'
  * Sibling on the right is `TimelineTrackRow` — match `heightClass` between
  * the two so labels line up with their lanes.
  */
-defineProps<{
+const props = defineProps<{
   kind: 'video' | 'audio'
   label: string
   /** Audio-only: current volume (0–2). Omit for video rows. */
@@ -22,20 +22,40 @@ defineProps<{
   disabled?: boolean
   /** Tailwind height utility. Default 'h-12' (matches default TimelineTrackRow height). */
   heightClass?: string
+  /** Enable the icon/label region as a drag handle for track reordering.
+   *  Default false (single-video editor's two fixed tracks don't reorder). */
+  reorderable?: boolean
+  /** Visual cue while this row is the active drag source. */
+  dragging?: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (e: 'update:volume', v: number): void
   (e: 'remove'): void
+  /** Fires when the user mouse-downs the drag handle. Parent owns the
+   *  mousemove/mouseup pipeline so it can cross-row hit-test against
+   *  same-kind targets and apply the final reorder. */
+  (e: 'reorder-mousedown', ev: MouseEvent): void
 }>()
+
+function onHandleMouseDown(ev: MouseEvent) {
+  if (!props.reorderable || props.disabled) return
+  if (ev.button !== 0) return
+  emit('reorder-mousedown', ev)
+}
 </script>
 
 <template>
   <div
-    class="flex shrink-0 items-center gap-1 border-b border-border-base px-2"
-    :class="heightClass ?? 'h-12'"
+    class="flex shrink-0 items-center gap-1 border-b border-border-base px-2 transition-opacity"
+    :class="[heightClass ?? 'h-12', dragging ? 'opacity-40' : '']"
   >
-    <span class="min-w-0 truncate">{{ kind === 'video' ? '🎬' : '🔊' }} {{ label }}</span>
+    <span
+      class="min-w-0 flex-1 truncate select-none"
+      :class="reorderable && !disabled ? 'cursor-grab active:cursor-grabbing' : ''"
+      :title="reorderable && !disabled ? '按住拖动可调整轨道顺序' : ''"
+      @mousedown="onHandleMouseDown"
+    >{{ kind === 'video' ? '🎬' : '🔊' }} {{ label }}</span>
     <div v-if="kind === 'audio' && volume !== undefined" class="shrink-0">
       <AudioVolumePopover
         :model-value="volume"

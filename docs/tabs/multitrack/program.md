@@ -368,7 +368,7 @@ web/src/components/multitrack/
    - 短轨用 color=c=black:s=<W>x<H>:d=<gap> 填到 programDur
    - 主分辨率取所有视频 source 中的 max(W) × max(H);非主分辨率 source 用 scale=W:H:force_original_aspect_ratio=decrease,pad=W:H:(W-iw)/2:(H-ih)/2 适配
 3. 视频叠加:[V_1][V_2]overlay=0:0[V_12]; [V_12][V_3]overlay=0:0[V_123]; ... [V]
-   - 轨号小→底,轨号大→顶
+   - 轨号小→顶,轨号大→底(v0.5.1 与时间轴 UI 顶端一致:列表顶行 = 顶层 z)
 4. 音频轨 A_j:同样 atrim/concat,加 [A_j_pre]volume=trackVolume[A_j]
    - 短轨用 anullsrc=cl=stereo:r=44100,atrim=0:<gap>
 5. 多音频混合:[A_1][A_2]...amix=inputs=N:duration=longest:dropout_transition=0[A_pre]
@@ -413,9 +413,9 @@ web/src/components/multitrack/
 
 ## 6. 预览策略(关键技术决策)
 
-> **v0.5.1 不重写预览,但加变换框 overlay**:本节(单 `<video>` 切源 + 多 `<audio>`)在 v0.5.1 仍是默认。预览容器变成"画布尺寸的等比缩放盒",变换框作为 DOM overlay 叠加。详见 [§12.4](#124-前端预览端的画布与变换框v051)。
+> **v0.5.1 推进**:从 v0.5.0 的"单 `<video>` 切源、只显示顶层轨"升级到**多 `<video>` 层叠近似真合成**(原 §6.2 v2 方案落地)。每条视频轨一个独立 `<video>` 元素,按 z-index 层叠;顶层 active video 当 master 驱动 playhead,follower 通过 rAF currentTime 校正同步。预览容器是"画布尺寸的等比缩放盒",变换框作为 DOM overlay 叠加(详见 [§12.4](#124-前端预览端的画布与变换框v051))。详细算法见 [§6.2](#62-v051-多-video-css-层叠近似真合成)。
 
-### 6.1 v1 默认方案:单 `<video>` 切源 + 多 `<audio>` 同步
+### 6.1 v0.5.0 历史方案(已废弃):单 `<video>` 切源 + 多 `<audio>` 同步
 
 **结构**:
 
@@ -432,7 +432,7 @@ MultitrackPreview.vue
 ```ts
 // 每帧 onTimeUpdate / 每 rAF 调用
 function tick(now) {
-  // 1. 找当前节目时间下"轨号最高的、当前正命中视频 clip"的 (track, clip)
+  // 1. 找当前节目时间下"轨号最低的(顶层 z)、当前正命中视频 clip"的 (track, clip)
   const topActive = findTopVideoActive(playhead, store.videoTracks)
   if (topActive) {
     const { source, srcTime } = topActive
@@ -456,26 +456,67 @@ function tick(now) {
 }
 ```
 
-**代价**:
+**v0.5.0 代价**(v0.5.1 已通过 §6.2 多 video 方案解决):
 
-- 多视频轨叠加在预览端**不真合成**,只看顶层(产品已接受,见 [product.md §6](product.md))
-- `vMain.src` 切换有 `loading` 闪屏 → 用 `<canvas>` 截上一帧覆盖在切换间隙(M5 评估)
+- 多视频轨叠加在预览端**不真合成**,只看顶层
+- `vMain.src` 切换有 `loading` 闪屏
 
-### 6.2 v2 方案:多 `<video>` CSS 层叠
+### 6.2 v0.5.1 方案:多 `<video>` CSS 层叠近似真合成
 
 ```html
-<div class="preview-stack relative">
-  <video v-for="track in videoTracks" :key="track.id"
-         :style="{ zIndex: track.order }"
-         class="absolute inset-0" />
+<div class="canvas-box relative">
+  <!-- 棋盘格背景 + 每条视频轨一个 <video> -->
+  <video v-for="(t, i) in videoTracks"
+         :key="t.id"
+         v-show="trackVisuals[i].visible"
+         :ref="(el) => setVideoRef(i, el)"
+         class="absolute object-fill"
+         :style="trackVisuals[i].style" />  <!-- left/top/width/height/zIndex -->
+  <audio v-for="t in audioTracks" :key="t.id" ... />
+  <TransformOverlay v-if="overlayVisible" ... />
 </div>
 ```
 
-每条视频轨一个 `<video>`,`requestVideoFrameCallback` 同步播放头。复杂度:多个元素的 seek 异步、解码资源占用、音视频同步漂移。**留给 v2**,v1 不引入。
+**结构**:
+
+- 每条视频轨一个独立 `<video>` 元素,`v-for` 渲染、`videoRefs[i]` 数组化
+- z-index = `N - i`(i=0 顶层、i=N-1 底层),与导出 overlay 链顺序一致(轨号小 = 顶层 z)
+- 每个 `<video>` 的 `left/top/width/height` 来自该轨当前 active clip 的 `transform` 转成 canvas-box 百分比;`object-fill` 让源帧拉伸到 (W, H),与导出端 `scale=W:H` 等价
+- 该轨在当前 playhead 没有 active clip → `v-show:false`(保留 src,避免下次进入预热)
+
+**算法**(`useMultitrackPreview.ts`):
+
+```ts
+// applyVideoFor(t):per-track 同步
+for each track i {
+  const active = videoActive(track, t)
+  if (!active) { videoRefs[i].pause(); continue }
+  if (videoRefs[i].src !== url(active.source)) videoRefs[i].src = url(...)
+  if (|videoRefs[i].currentTime - active.srcTime| > 0.05) videoRefs[i].currentTime = active.srcTime
+  if (store.playing && videoRefs[i].paused) videoRefs[i].play()
+  if (!store.playing && !videoRefs[i].paused) videoRefs[i].pause()
+}
+
+// onVideoTimeUpdate:只 master 推进 playhead,顺便校正 follower
+function onVideoTimeUpdate(v) {
+  if (v !== masterVideoRef.value) return  // 只信 master
+  store.playhead = topActive.clip.programStart + (v.currentTime - topActive.clip.sourceStart)
+  syncAudio(...)
+  // follower 漂移 > 0.08s 一次性写回 currentTime(rAF 不够稳就 timeupdate 兜底)
+  for (followers) if (drift > 0.08) v.currentTime = expected
+}
+```
+
+**Master 选举**:`masterVideoRef = computed(() => videoRefs[topVideoActiveIndex(playhead)])`。当顶层 active 切换轨道(顶层 clip 结束、下一条顶层接管),computed 重新求值,`usePreviewCore` 的 `watch(videoRef.value)` 自动 detach 旧 master + attach 新 master,无需显式触发。
+
+**代价**:
+
+- 多个 `<video>` 元素之间没有帧精确同步;follower 通过 currentTime 校正,理论漂移 50–100ms 量级。**这是预览近似;导出仍由 ffmpeg overlay 帧精确合成**
+- 多 source 同时解码占用 CPU/内存高于 v0.5.0 单 video,但 4K 双轨在主流硬件可接受
 
 ### 6.3 v3:Canvas + WebCodecs
 
-帧精确,不在多轨 v1 范围。
+帧精确预览;不在 v0.5.x 范围。
 
 ### 6.4 与单视频共用的部分
 
@@ -727,8 +768,9 @@ if c.Transform.W <= 0 || c.Transform.H <= 0 {
 1. 起 base 画布:
    color=c=black:s=CWxCH:r=FR:d=programDur,format=yuv420p [base]
 
-2. 收集所有视频 clip,按 (trackIndex 升序, programStart 升序) 排序得到 z-list:
-   - 轨号小的在底,轨号大的在顶
+2. 收集所有视频 clip,按 (trackIndex 降序, programStart 升序) 排序得到 z-list:
+   - 轨号大的在底(链尾先 emit,处于 base 之上),轨号小的在顶(链头最后 emit)
+   - **轨号小 = 顶层** 与时间轴 UI 的视觉顺序一致(列表顶行 = 顶层 z),也是 frontend `topVideoActive` 的同一约定
    - 同轨道内按时间(同一轨道下 clip 不重叠,排序顺序对像素无影响,但保持稳定)
 
 3. 对每个 video clip 生成 segment:

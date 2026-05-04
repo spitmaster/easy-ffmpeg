@@ -12,7 +12,7 @@
 
 | Feature | 分支 | 启动日期 | 当前 M | 详情 |
 |---------|------|---------|--------|------|
-| 多轨画布 + clip 变换(v0.5.1) | `feature-v0.5.1/multitrack-scale-video` | 2026-05-04 | M1 ✅ M2 ✅ M3 ✅ M4 ✅;M5 待启动 | [milestones/feature-v0.5.1_multitrack-scale-video.md](milestones/feature-v0.5.1_multitrack-scale-video.md) |
+| _(空)_ | — | — | — | — |
 
 ---
 
@@ -22,6 +22,7 @@
 
 | Feature | 分支 | 完成日期 | 详情 |
 |---------|------|---------|------|
+| 多轨画布 + clip 变换(v0.5.1) | `feature-v0.5.1/multitrack-scale-video` | 2026-05-04 | [milestones/archive/feature-v0.5.1_multitrack-scale-video.md](milestones/archive/feature-v0.5.1_multitrack-scale-video.md) |
 | 多轨剪辑器(类 Premiere Pro,v0.5.0) | `feature-v0.5.0/multitrack-editor` | 2026-05-01 | [milestones/archive/feature-v0.5.0_multitrack-editor.md](milestones/archive/feature-v0.5.0_multitrack-editor.md) |
 | 前端 Vue 化迁移(v0.5.0) | `v0.5.0` | 2026-04-30 | [milestones/archive/v0.5.0.md](milestones/archive/v0.5.0.md) |
 

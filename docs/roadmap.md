@@ -16,8 +16,8 @@
 
 | 项 | 值 |
 |---|---|
-| 当前版本 | **v0.5.0** |
-| 进行中 | ⏳ **多轨画布 + clip 变换(v0.5.1)** — 工程级画布(自定义分辨率)+ 每个 video clip 的 (X, Y, W, H) 变换,导出端切到真合成 overlay 链(PIP / 双机位 / 角标轨)。详见 [milestones/feature-v0.5.1_multitrack-scale-video.md](milestones/feature-v0.5.1_multitrack-scale-video.md);PRD/技术设计在 [tabs/multitrack/product.md §12](tabs/multitrack/product.md) + [tabs/multitrack/program.md §12](tabs/multitrack/program.md) |
+| 当前版本 | **v0.5.1** |
+| 进行中 | _(空)_ — 下一项功能待启动时,从 §2 待启动列表挑选并按晋升规则迁入 |
 
 ---
 
@@ -72,7 +72,7 @@
 - 非 FFmpeg 的处理引擎
 - 移动端 / 平板专门适配
 - ~~嵌入 webview(走 Electron / Tauri / Wails 路线)~~ — **v0.4.0 撤销**:Wails 桌面版作为 Web 版的并列产物(不替换 Web 版)。详见 [core/desktop.md](core/desktop.md)
-- **多轨剪辑进阶剩余项**(opacity / 旋转 / 关键帧动画 / 转场 / 调色)— v0.5.0 做全屏 overlay + amix;**v0.5.1 提前 PiP / position / scale**(进行中,见 §1);剩余的 opacity / 旋转 / 关键帧 / 转场 / 调色仍留 v0.7.x 单独立项。详见 [tabs/multitrack/product.md §12](tabs/multitrack/product.md)
+- **多轨剪辑进阶剩余项**(opacity / 旋转 / 关键帧动画 / 转场 / 调色)— v0.5.0 做全屏 overlay + amix;**PiP / position / scale 已 v0.5.1 落地**(自定义画布 + 每个 video clip 的 (X, Y, W, H) 变换,真合成 overlay 链);剩余的 opacity / 旋转 / 关键帧 / 转场 / 调色仍留 v0.7.x 单独立项。详见 [tabs/multitrack/product.md §12](tabs/multitrack/product.md)
 
 ---
 
@@ -89,3 +89,4 @@
 | **0.4.0** | Wails 桌面版并列产物(共享后端字节相同,cgo 隔离在 `cmd/desktop/`) |
 | **0.5.0** | 前端 Vue 化(Vue 3 + Vite + TS + Pinia + Tailwind;为多轨剪辑器铺路) |
 | **0.5.0** | 多轨剪辑器(类 Premiere Pro:多源素材库、N 视频/音频轨、跨轨拖动、overlay/amix 单次 ffmpeg 导出;后端 `editor/common/` 抽出与单视频共享) |
+| **0.5.1** | 多轨画布 + clip 变换(自定义工程画布分辨率/帧率;每个 video clip 的 (X, Y, W, H) 变换;导出端切到真合成 base + 平铺 overlay 链 → PiP / 双机位 / 角标轨;TransformOverlay 8 手柄 + Inspector 面板 + 键盘 1px/10px 微调) |
