@@ -7,6 +7,7 @@ import {
   type MultitrackExportBody,
   type MultitrackProject,
   type MultitrackSource,
+  type MultitrackTransform,
 } from '@/api/multitrack'
 import type { ExportSettings, ProjectsModalItem, RangeSelection, TrackData, TrackTone } from '@/types/timeline'
 import { useDirsStore } from '@/stores/dirs'
@@ -790,23 +791,41 @@ function nudgeSelected(dx: number, dy: number): boolean {
   return true
 }
 
-function resetSelectedToFullCanvas(): boolean {
+function resetSelectedToSourceRatio(): boolean {
   const sel = store.selectedVideoClip
   const c = store.project?.canvas
   if (!sel || !c) return false
+  // Mirrors MultitrackInspector.computeResetTransform — contain-fit
+  // centred using source dimensions, fallback to full canvas when those
+  // dimensions aren't known.
+  const src = store.sourcesById[sel.clip.sourceId]
+  let target: MultitrackTransform
+  if (src && src.width && src.height && src.width > 0 && src.height > 0) {
+    const scale = Math.min(c.width / src.width, c.height / src.height)
+    const w = Math.max(1, Math.round(src.width * scale))
+    const h = Math.max(1, Math.round(src.height * scale))
+    target = {
+      x: Math.round((c.width - w) / 2),
+      y: Math.round((c.height - h) / 2),
+      w,
+      h,
+    }
+  } else {
+    target = { x: 0, y: 0, w: c.width, h: c.height }
+  }
   const cur = sel.clip.transform
-  if (cur.x === 0 && cur.y === 0 && cur.w === c.width && cur.h === c.height) return true
-  store.commitClipTransform(sel.trackId, sel.clipId, { x: 0, y: 0, w: c.width, h: c.height })
+  if (cur.x === target.x && cur.y === target.y && cur.w === target.w && cur.h === target.h) return true
+  store.commitClipTransform(sel.trackId, sel.clipId, target)
   return true
 }
 
 function onTransformKeyCapture(ev: KeyboardEvent) {
   if (store.exportLocked) return
   if (isInEditable(ev.target)) return
-  // Ctrl+0 → reset (only when a video clip is selected; otherwise let
-  // the browser / other handlers see it).
+  // Ctrl+0 → reset to source ratio (only when a video clip is selected;
+  // otherwise let the browser / other handlers see it).
   if ((ev.ctrlKey || ev.metaKey) && ev.key === '0') {
-    if (resetSelectedToFullCanvas()) {
+    if (resetSelectedToSourceRatio()) {
       ev.preventDefault()
       ev.stopImmediatePropagation()
     }

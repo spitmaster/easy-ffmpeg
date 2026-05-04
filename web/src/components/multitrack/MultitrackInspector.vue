@@ -9,8 +9,11 @@ import { useMultitrackStore } from '@/stores/multitrack'
  *      with a button to open CanvasSettingsDialog. The dialog is owned
  *      by MultitrackView; we just emit 'open-canvas-dialog'.
  *   2. 选中片段 (only when selectedVideoClip is non-null) — four numeric
- *      inputs (X / Y / W / H), a "重置为全画布" button, and a hint when
- *      the transform is fully outside the canvas.
+ *      inputs (X / Y / W / H), a "复原原始比例" button, and a hint when
+ *      the transform is fully outside the canvas. The reset button does
+ *      a contain-fit using the source's original aspect ratio (centred
+ *      in the canvas); when source dimensions are unknown it falls back
+ *      to filling the whole canvas.
  *
  * Numeric inputs use a local draft (so typing "12" mid-stream doesn't
  * commit "1" then "12"). Commit on blur or Enter; Escape reverts to the
@@ -104,11 +107,29 @@ function resetTransform() {
   const sel = selected.value
   const c = canvas.value
   if (!sel || !c) return
-  const full: MultitrackTransform = { x: 0, y: 0, w: c.width, h: c.height }
-  // Skip if already full-canvas.
+  const target = computeResetTransform(sel.clip.sourceId, c)
   const cur = sel.clip.transform
-  if (cur.x === 0 && cur.y === 0 && cur.w === c.width && cur.h === c.height) return
-  store.commitClipTransform(sel.trackId, sel.clipId, full)
+  if (target.x === cur.x && target.y === cur.y && target.w === cur.w && target.h === cur.h) return
+  store.commitClipTransform(sel.trackId, sel.clipId, target)
+}
+
+// Contain-fit centred in the canvas using source dimensions; when the
+// source's width/height aren't known (older projects, edge probes), fall
+// back to filling the canvas so the button still does something useful.
+function computeResetTransform(sourceId: string, c: MultitrackCanvas): MultitrackTransform {
+  const src = store.sourcesById[sourceId]
+  if (!src || !src.width || !src.height || src.width <= 0 || src.height <= 0) {
+    return { x: 0, y: 0, w: c.width, h: c.height }
+  }
+  const scale = Math.min(c.width / src.width, c.height / src.height)
+  const w = Math.max(1, Math.round(src.width * scale))
+  const h = Math.max(1, Math.round(src.height * scale))
+  return {
+    x: Math.round((c.width - w) / 2),
+    y: Math.round((c.height - h) / 2),
+    w,
+    h,
+  }
 }
 
 function fullyOutOfBounds(clip: MultitrackClip, c: MultitrackCanvas): boolean {
@@ -253,9 +274,9 @@ function onKeyDown(ev: KeyboardEvent) {
         <button
           class="mt-3 w-full rounded border border-border-strong bg-bg-base px-2 py-1 hover:bg-bg-elevated disabled:opacity-50"
           :disabled="store.exportLocked"
-          :title="'重置为全画布 (Ctrl+0)'"
+          :title="'按源比例居中适配画布 (Ctrl+0)'"
           @click="resetTransform"
-        >重置为全画布</button>
+        >复原原始比例</button>
 
         <div
           v-if="oob"
@@ -271,7 +292,7 @@ function onKeyDown(ev: KeyboardEvent) {
           快捷键:<br>
           ←/→/↑/↓ 微调 1px<br>
           Shift+← 等 一次 10px<br>
-          Ctrl+0 重置为全画布
+          Ctrl+0 复原原始比例
         </div>
       </section>
     </div>

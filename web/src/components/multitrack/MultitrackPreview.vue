@@ -161,6 +161,18 @@ const overlayVisible = computed(
   () => !!store.selectedVideoClip && !store.exportLocked,
 )
 
+// Source aspect ratio for the selected clip — fed to TransformOverlay so
+// that Shift-drag locks against the original shape (not the current
+// transform). Undefined when source dimensions aren't known; the overlay
+// then falls back to the live transform's ratio.
+const selectedSourceRatio = computed<number | undefined>(() => {
+  const sel = store.selectedVideoClip
+  if (!sel) return undefined
+  const src = store.sourcesById[sel.clip.sourceId]
+  if (!src || !src.width || !src.height || src.width <= 0 || src.height <= 0) return undefined
+  return src.width / src.height
+})
+
 function onTransformPreview(t: MultitrackTransform) {
   const sel = store.selectedVideoClip
   if (!sel) return
@@ -228,6 +240,7 @@ function onVideoClick(track: MultitrackVideoTrack) {
         v-if="overlayVisible && store.selectedVideoClip"
         :canvas="canvas"
         :transform="store.selectedVideoClip.clip.transform"
+        :source-ratio="selectedSourceRatio"
         @update="onTransformPreview"
         @commit="onTransformCommit"
       />

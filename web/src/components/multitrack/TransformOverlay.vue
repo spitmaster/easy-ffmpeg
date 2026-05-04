@@ -20,8 +20,10 @@ import type { MultitrackCanvas, MultitrackTransform } from '@/api/multitrack'
  *   - Centre drag: moves (X, Y); Shift locks to single axis (the larger
  *     accumulated delta wins).
  *   - Corner handles: change W and H together; Shift locks aspect ratio
- *     (against the original ratio at drag start); Alt anchors at centre
- *     (W and H change symmetrically, X/Y compensate so centre stays put).
+ *     (preferring `sourceRatio` if provided so the user can recover the
+ *     source's original ratio after a free transform; falls back to the
+ *     transform's ratio at drag start). Alt anchors at centre (W and H
+ *     change symmetrically, X/Y compensate so centre stays put).
  *   - Edge handles: change one dimension; Shift / Alt rules same as
  *     corner but apply to the active axis only.
  *
@@ -39,6 +41,14 @@ import type { MultitrackCanvas, MultitrackTransform } from '@/api/multitrack'
 interface Props {
   canvas: MultitrackCanvas
   transform: MultitrackTransform
+  /**
+   * Original source aspect ratio (width / height). When provided and > 0,
+   * Shift-drag locks against this rather than the live transform's ratio,
+   * so a user who has freely deformed a clip can re-acquire its original
+   * shape simply by holding Shift while dragging a handle. Optional —
+   * the parent may not have source dimensions for every clip.
+   */
+  sourceRatio?: number
 }
 
 const props = defineProps<Props>()
@@ -179,6 +189,12 @@ function computeDraft(
 ): MultitrackTransform {
   const s = state.startTransform
   const startRatio = s.h > 0 ? s.w / s.h : 1
+  // Prefer the source's original ratio when known, so Shift-drag can
+  // recover the original shape after a free transform; fall back to the
+  // current ratio so the lock still works for clips with unknown source
+  // dimensions.
+  const lockRatio =
+    props.sourceRatio && props.sourceRatio > 0 ? props.sourceRatio : startRatio
   let { x, y, w, h } = s
 
   switch (state.handle) {
@@ -231,18 +247,19 @@ function computeDraft(
           h = s.h + delta
         }
       }
-      // Shift on edges: keep aspect ratio against the start ratio. The
+      // Shift on edges: keep aspect ratio against `lockRatio` (source
+      // ratio if known, else the transform's ratio at drag start). The
       // OTHER axis follows, anchored at the opposite edge (or centre when
       // alt is also held).
       if (shift) {
         if (isHoriz) {
-          const newH = startRatio > 0 ? w / startRatio : h
+          const newH = lockRatio > 0 ? w / lockRatio : h
           if (alt) {
             y = s.y + (s.h - newH) / 2
           }
           h = newH
         } else {
-          const newW = h * startRatio
+          const newW = h * lockRatio
           if (alt) {
             x = s.x + (s.w - newW) / 2
           }
@@ -260,15 +277,22 @@ function computeDraft(
       const isTop = state.handle === 'nw' || state.handle === 'ne'
       let dwLocal = isLeft ? -dx : dx
       let dhLocal = isTop ? -dy : dy
-      if (shift) {
-        // Pick the dominant axis (in canvas px) and let the other one
-        // follow ratio. This feels right for both "expanding outward" and
-        // "shrinking inward" gestures.
-        if (Math.abs(dwLocal) >= Math.abs(dhLocal)) {
-          dhLocal = startRatio > 0 ? dwLocal / startRatio : dhLocal
-        } else {
-          dwLocal = dhLocal * startRatio
-        }
+      if (shift && lockRatio > 0) {
+        // Orthogonal projection of the raw delta (dwLocal, dhLocal) onto
+        // the line dw = lockRatio * dh, i.e. the set of (dw, dh) pairs
+        // that preserve the locked aspect ratio.
+        //
+        // The previous implementation picked a "dominant axis" by
+        // comparing |dwLocal| vs |dhLocal| and let the other axis follow.
+        // That switch is discontinuous at the diagonal |dw| == |dh|: each
+        // time the mouse crossed it, the constrained pair jumped from
+        // one curve to another, which the user perceived as the box
+        // sticking at certain sizes and then catching up. Projection is
+        // C¹ continuous everywhere → smooth resize for any mouse path.
+        const r = lockRatio
+        const k = (r * dwLocal + dhLocal) / (r * r + 1)
+        dwLocal = k * r
+        dhLocal = k
       }
       if (alt) {
         // Symmetric around centre.
