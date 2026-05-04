@@ -2,10 +2,12 @@
 import { onMounted, ref } from 'vue'
 import { useVersionStore } from '@/stores/version'
 import { useFfmpegStore } from '@/stores/ffmpeg'
+import { useModalsStore } from '@/stores/modals'
 import { quitApi } from '@/api/quit'
 
 const version = useVersionStore()
 const ffmpeg = useFfmpegStore()
+const modals = useModalsStore()
 const exited = ref(false)
 
 onMounted(() => {
@@ -18,7 +20,12 @@ async function onFfmpegClick() {
   try {
     await ffmpeg.reveal()
   } catch (e) {
-    alert('打开失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '打开失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 

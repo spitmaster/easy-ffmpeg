@@ -76,7 +76,7 @@ docs/todo/<branch_name with "/" → "_">.md
 | [core/frontend.md](core/frontend.md) | 程序 | 前端架构:Vue 3 + Vite + TS + Pinia + Tailwind;`web/` 工程目录、API 客户端层、SSE 总线、`useJobPanel` composable、全局对话框 |
 | [core/build.md](core/build.md) | 程序 | 构建脚本、前端 npm 流水、跨平台 Go 编译、7z 嵌入、首次启动解压、桌面版构建 |
 | [core/desktop.md](core/desktop.md) | 程序 | v0.4.0 双产物拓扑:决策、Wails 外壳设计、共享层不变量、cgo 隔离 |
-| [core/frontend-vue-migration.md](core/frontend-vue-migration.md) | 程序 | 前端 Vue 化迁移方案(v0.5.x,**已完成**):整体规划、目录结构、构建脚本接线、四个里程碑的范围与验收。最终落地见 [frontend.md](core/frontend.md) |
+| [core/frontend-vue-migration.md](core/frontend-vue-migration.md) | 程序 | 前端 Vue 化迁移方案(v0.5.0,**已完成**):整体规划、目录结构、构建脚本接线、四个里程碑的范围与验收。最终落地见 [frontend.md](core/frontend.md) |
 
 ## Tab 详细设计(tabs/)
 
@@ -100,11 +100,11 @@ docs/todo/<branch_name with "/" → "_">.md
 - 改构建/打包 → [core/build.md](core/build.md)
 - 桌面版相关 → [core/desktop.md](core/desktop.md)
 
-## 当前状态(v0.6.0)
+## 当前状态(v0.5.0)
 
 - **架构**:本地 HTTP 服务 + 浏览器 Web UI;v0.4.0 起增加并列的 Wails 桌面版
 - **前端**:Vue 3 + Vite + TypeScript + Pinia + Vue Router + TailwindCSS,工程目录在 `web/`,产物 `web/dist/` 由 `easy-ffmpeg/web` 包用 `//go:embed all:dist` 嵌入
 - **FFmpeg**:7z 压缩包嵌入 Go 二进制,首次启动解压到 `~/.easy-ffmpeg/bin-<hash>/`
 - **产物大小**:Web 版 Windows 35 MB · macOS 27 MB · Linux 29 MB;桌面版各 +5–15 MB(前端 bundle 经 Vite 构建后约几十 KB,体积影响可忽略)
-- **后端共享层**:`editor/common/{domain,ports}/` 抽出供单视频与多轨复用;`multitrack/` 是 v0.6.0 新增的独立模块(SOLID 分层),与 `editor/` 平级
+- **后端共享层**:`editor/common/{domain,ports}/` 抽出供单视频与多轨复用;`multitrack/` 是 v0.5.0 新增的独立模块(SOLID 分层),与 `editor/` 平级
 - **测试**:`server/audio_args_test.go` + `editor/domain/*_test.go` + `editor/storage/jsonrepo_test.go` + `multitrack/domain/*_test.go`(多轨 timeline / filter / export);跑 `go test ./...` 与 `CGO_ENABLED=0 go test ./...` 双验证;前端目前未引入单测(见 [frontend-vue-migration.md §0](core/frontend-vue-migration.md))

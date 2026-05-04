@@ -49,7 +49,7 @@
 
 依赖方向严格自上而下:`cmd → server, service → embedded, job, browser, procutil, config`。`editor` 子包内部也严格单向:`api → ports ← storage → domain`。`server` 通过 `editor_wiring.go` 适配具体实现为 `editor/ports` 接口,`editor/` 对主程序其余部分完全无感。
 
-> **v0.4.0 双入口**:`cmd/desktop/main.go` 是与 `cmd/main.go` **并列**的入口,内部仍是 `server.New() + Listen()`,只是把端口交给嵌入的 Wails WebView 而非系统浏览器。后端、`server/`、`editor/`、`internal/*`、以及 v0.5.x 起的 `web/` 前端 bundle,在两个入口之间字节相同。详见 [desktop.md](desktop.md)。
+> **v0.4.0 双入口**:`cmd/desktop/main.go` 是与 `cmd/main.go` **并列**的入口,内部仍是 `server.New() + Listen()`,只是把端口交给嵌入的 Wails WebView 而非系统浏览器。后端、`server/`、`editor/`、`internal/*`、以及 v0.5.0 起的 `web/` 前端 bundle,在两个入口之间字节相同。详见 [desktop.md](desktop.md)。
 
 ## 2. 目录结构
 
@@ -64,7 +64,7 @@ easy-ffmpeg/
 │       ├── app.go                    App 结构体 + startup/shutdown
 │       ├── frontend/dist/index.html  极简 splash(JS 跳转到 localhost:port)
 │       └── wails.json
-├── web/                              ★ 前端工程(v0.5.x+,Vue 3 + Vite + TS + Pinia + Tailwind)
+├── web/                              ★ 前端工程(v0.5.0+,Vue 3 + Vite + TS + Pinia + Tailwind)
 │   ├── package.json / vite.config.ts / tsconfig.json
 │   ├── tailwind.config.js / postcss.config.js / index.html
 │   ├── embed.go                      `//go:embed all:dist` → easy-ffmpeg/web 包

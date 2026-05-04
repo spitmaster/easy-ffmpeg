@@ -46,7 +46,7 @@
 ### 2.1 `build.sh` 核心逻辑
 
 ```bash
-# 前端构建(放最前)— v0.5.x 起 Vue 工程在 web/,产物在 web/dist/。
+# 前端构建(放最前)— v0.5.0 起 Vue 工程在 web/,产物在 web/dist/。
 build_frontend() {
     if ! command -v npm >/dev/null 2>&1; then
         echo "ERROR: npm not found. Install Node.js >= 20 to build the frontend." >&2
@@ -261,7 +261,7 @@ wails build -clean -o ../../dist/easy-ffmpeg-desktop-linux       # Linux 本机
 
 | 问题 | 原因 | 解决 |
 |------|------|------|
-| `npm: command not found` / `ERROR: npm not found` | 没装 Node.js 或不在 PATH | 装 Node.js ≥ 20 LTS;v0.5.x 起前端必须先编出 `web/dist/` |
+| `npm: command not found` / `ERROR: npm not found` | 没装 Node.js 或不在 PATH | 装 Node.js ≥ 20 LTS;v0.5.0 起前端必须先编出 `web/dist/` |
 | `web/embed.go: pattern all:dist: no matching files found` | `web/dist/` 不存在 | 跑过 `cd web && npm run build`?build.sh / build.bat 顺序保障了这一步 |
 | `embedded_darwin.go: pattern darwin/darwin.7z: no matching files found` | 对应平台的 7z 不存在 | 准备好所有 3 个平台的 .7z 文件后再编译 |
 | 编译后体积过大 | 可能误嵌了未压缩的二进制 | 确认 `embedded_<os>.go` 的 embed 指令是 `<os>/<os>.7z` 而非目录 |

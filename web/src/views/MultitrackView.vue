@@ -1,20 +1,22 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, toRef, useTemplateRef, watch } from 'vue'
+import { computed, onMounted, ref, toRef, useTemplateRef } from 'vue'
 import {
   multitrackApi,
   SOURCE_VIDEO,
   type MultitrackClip,
   type MultitrackExportBody,
-  type MultitrackExportStartResponse,
+  type MultitrackProject,
   type MultitrackSource,
 } from '@/api/multitrack'
 import type { ExportSettings, ProjectsModalItem, RangeSelection, TrackData, TrackTone } from '@/types/timeline'
 import { useDirsStore } from '@/stores/dirs'
 import { useMultitrackStore, MultitrackSel } from '@/stores/multitrack'
 import { useModalsStore } from '@/stores/modals'
-import { useJobPanel } from '@/composables/useJobPanel'
+import { useExportFlow } from '@/composables/useExportFlow'
 import { useMultitrackOps } from '@/composables/useMultitrackOps'
 import { useTimelineDrag } from '@/composables/timeline/useTimelineDrag'
+import { useTimelineLifecycle } from '@/composables/timeline/useTimelineLifecycle'
+import { useTimelineMouseHandlers } from '@/composables/timeline/useTimelineMouseHandlers'
 import { useTimelinePlayback } from '@/composables/timeline/useTimelinePlayback'
 import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeSelect'
 import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
@@ -57,23 +59,8 @@ const modals = useModalsStore()
 const ops = useMultitrackOps()
 
 const projectsOpen = ref(false)
-const exportOpen = ref(false)
-const exportSidebarOpen = ref(false)
 const importing = ref(false)
 
-/**
- * Per-tab job state machine. Same shared composable the editor uses; the
- * cancelUrl points at multitrack's endpoint but the underlying JobRunner
- * is the global single-job manager — cancelling here also kills any
- * editor / convert / audio job in flight.
- */
-const job = useJobPanel({
-  cancelUrl: '/api/multitrack/export/cancel',
-  runningLabel: '导出中...',
-  doneLabel: '✓ 导出完成',
-  errorLabel: '✗ 导出失败',
-  cancelledLabel: '! 导出已取消',
-})
 const libraryRef = useTemplateRef<{ setError: (msg: string) => void }>('libraryRef')
 const previewRef = useTemplateRef<{ play: () => void; pause: () => void; toggle: () => void; seek: (t: number) => void }>('previewRef')
 const scrollEl = useTemplateRef<HTMLDivElement>('scrollEl')
@@ -157,6 +144,80 @@ const singleTrackScopeBodyTop = computed<number | null>(() => {
   if (aIdx >= 0) return p.videoTracks.length * ROW_PX + aIdx * ROW_PX
   return null
 })
+
+// ---- Export flow (dialog + sidebar + job, all in one composable) ----
+
+/**
+ * Defaults for the export dialog. Mirrors the editor's pattern: pull the
+ * persisted ExportSettings from the project, falling back to system
+ * defaults + the saved output dir + the project name. Recomputed when the
+ * user reopens the dialog so a "save then reopen" cycle picks up edits.
+ */
+const exportDefaults = computed<ExportSettings>(() => {
+  const e = store.project?.export
+  return {
+    format: e?.format || 'mp4',
+    videoCodec: e?.videoCodec || 'h264',
+    audioCodec: e?.audioCodec || 'aac',
+    outputDir: e?.outputDir || dirs.outputDir || '',
+    outputName: e?.outputName || store.project?.name || 'multitrack',
+  }
+})
+
+/** "Project has at least one clip on at least one track" — mirrors the
+ * backend's "no clips" guard so the button can disable cleanly. */
+const hasAnyClip = computed(() => {
+  const p = store.project
+  if (!p) return false
+  for (const t of p.videoTracks) if (t.clips.length) return true
+  for (const t of p.audioTracks) if (t.clips.length) return true
+  return false
+})
+
+const exportFlow = useExportFlow<MultitrackProject, MultitrackExportBody>({
+  getProject: () => store.project,
+  defaults: exportDefaults,
+  validate: (project, _settings) => {
+    let hasAny = false
+    for (const t of project.videoTracks) if (t.clips.length) { hasAny = true; break }
+    if (!hasAny) {
+      for (const t of project.audioTracks) if (t.clips.length) { hasAny = true; break }
+    }
+    if (!hasAny) return '时间轴为空，无法导出'
+    // Frontend-side leading-gap pre-check so the user doesn't have to wait
+    // for the dryRun roundtrip to learn they're offending. Backend re-checks.
+    for (let i = 0; i < project.videoTracks.length; i++) {
+      const clips = project.videoTracks[i].clips
+      if (!clips.length) continue
+      const earliest = clips.reduce((m, c) => Math.min(m, c.programStart), Infinity)
+      if (earliest > 0.001) {
+        return `视频轨 ${i + 1} 开头必须有内容：第一个 clip 从 ${earliest.toFixed(2)}s 开始。\n请把它拖到 0 秒再导出。`
+      }
+    }
+    return null
+  },
+  flushSave: () => store.flushSave(),
+  buildBody: (project, settings) => ({ projectId: project.id, export: settings }),
+  api: {
+    exportPreview: multitrackApi.exportPreview,
+    startExport: multitrackApi.startExport,
+    cancelExport: multitrackApi.cancelExport,
+  },
+  totalDurationSec: () => store.programDuration,
+  setLocked: (v) => { store.exportLocked = v },
+  pausePreview: () => previewRef.value?.pause(),
+  jobOptions: {
+    cancelUrl: '/api/multitrack/export/cancel',
+    runningLabel: '导出中...',
+    doneLabel: '✓ 导出完成',
+    errorLabel: '✗ 导出失败',
+    cancelledLabel: '! 导出已取消',
+  },
+})
+
+const exportDisabled = computed(
+  () => !hasProject.value || !hasAnyClip.value || store.exportLocked,
+)
 
 // ---- Timeline composables ----
 
@@ -305,53 +366,31 @@ function seekToNearestBoundary(direction: -1 | 1) {
   }
 }
 
-// ---- Timeline mouse handlers ----
+// ---- Timeline mouse handlers (delegated) ----
 
-function clientXToTime(clientX: number, clamp = true): number {
-  const r = rulerEl.value
-  if (!r) return 0
-  const rect = r.getBoundingClientRect()
-  const x = clientX - rect.left
-  const t = x / store.pxPerSecond
-  if (!clamp) return t
-  return Math.max(0, Math.min(total.value, t))
+const previewLike = {
+  play: () => previewRef.value?.play(),
+  pause: () => previewRef.value?.pause(),
+  seek: (t: number) => previewRef.value?.seek(t),
 }
 
-function startScrubDrag(ev: MouseEvent) {
-  ev.preventDefault()
-  const wasPlaying = store.playing
-  if (wasPlaying) previewRef.value?.pause()
-  previewRef.value?.seek(clientXToTime(ev.clientX))
-  function onMove(e: MouseEvent) {
-    previewRef.value?.seek(clientXToTime(e.clientX))
-  }
-  function onUp() {
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
-    if (wasPlaying) previewRef.value?.play()
-  }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
-}
-
-function onRulerMouseDown(ev: MouseEvent) {
-  if (store.exportLocked) return
-  if (ev.button === 2) {
-    rangeSelect.start(ev)
-    return
-  }
-  store.splitScope = 'all'
-  store.selection = []
-  store.rangeSelection = null
-  startScrubDrag(ev)
-}
-
-function onPlayheadMouseDown(ev: MouseEvent) {
-  if (ev.button !== 0) return
-  ev.stopPropagation()
-  if (store.rangeSelection) store.rangeSelection = null
-  startScrubDrag(ev)
-}
+const mouse = useTimelineMouseHandlers({
+  rulerEl,
+  pxPerSecond: () => store.pxPerSecond,
+  totalSec: () => total.value,
+  isPlaying: () => store.playing,
+  preview: previewLike,
+  isLocked: () => store.exportLocked,
+  onRangeStart: (ev) => rangeSelect.start(ev),
+  beforeScrubFromRuler: () => {
+    store.splitScope = 'all'
+    store.selection = []
+    store.rangeSelection = null
+  },
+  beforeScrubFromPlayhead: () => {
+    if (store.rangeSelection) store.rangeSelection = null
+  },
+})
 
 function onTrackMouseDown(
   trackId: string,
@@ -367,7 +406,7 @@ function onTrackMouseDown(
     // Empty area → narrow split scope to this track + scrub.
     store.splitScope = { kind: 'track', id: trackId }
     store.selection = []
-    startScrubDrag(ev)
+    mouse.startScrubDrag(ev)
     return
   }
   const multi = ev.shiftKey || ev.ctrlKey || ev.metaKey
@@ -383,11 +422,6 @@ function onTrackMouseDown(
   }
 }
 
-// Suppress browser context menu — right-click on ruler is range select.
-function onContextMenu(ev: MouseEvent) {
-  ev.preventDefault()
-}
-
 // ---- Project lifecycle ----
 
 async function onCreate() {
@@ -396,7 +430,12 @@ async function onCreate() {
   try {
     await store.createNew(name)
   } catch (e) {
-    alert('新建失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '新建失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 
@@ -418,7 +457,12 @@ async function onLoad(id: string) {
   try {
     await store.openProject(id)
   } catch (e) {
-    alert('打开失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '打开失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 
@@ -445,7 +489,12 @@ async function onImport() {
       libraryRef.value.setError('未导入任何素材')
     }
   } catch (e) {
-    alert('导入失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '导入失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   } finally {
     importing.value = false
   }
@@ -458,7 +507,13 @@ async function onRemoveSource(sourceId: string) {
     await store.removeSource(sourceId)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    alert(msg.includes('still referenced') || msg.includes('in use') ? '该素材仍被时间轴上的片段引用，请先删除相关片段' : '移除失败: ' + msg)
+    const inUse = msg.includes('still referenced') || msg.includes('in use')
+    await modals.showConfirm({
+      title: '移除失败',
+      message: inUse ? '该素材仍被时间轴上的片段引用，请先删除相关片段' : msg,
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 
@@ -517,141 +572,9 @@ function onAddSource(sourceId: string) {
   }
 }
 
-// ---- Export ----
-
-/**
- * Defaults for the export dialog. Mirrors the editor's pattern: pull the
- * persisted ExportSettings from the project, falling back to system
- * defaults + the saved output dir + the project name. Recomputed when the
- * user reopens the dialog so a "save then reopen" cycle picks up edits.
- */
-const exportDefaults = computed<ExportSettings>(() => {
-  const e = store.project?.export
-  return {
-    format: e?.format || 'mp4',
-    videoCodec: e?.videoCodec || 'h264',
-    audioCodec: e?.audioCodec || 'aac',
-    outputDir: e?.outputDir || dirs.outputDir || '',
-    outputName: e?.outputName || store.project?.name || 'multitrack',
-  }
-})
-
-/** "Project has at least one clip on at least one track" — mirrors the
- * backend's "no clips" guard so the button can disable cleanly. */
-const hasAnyClip = computed(() => {
-  const p = store.project
-  if (!p) return false
-  for (const t of p.videoTracks) if (t.clips.length) return true
-  for (const t of p.audioTracks) if (t.clips.length) return true
-  return false
-})
-
-const exportDisabled = computed(
-  () => !hasProject.value || !hasAnyClip.value || store.exportLocked,
-)
-
-async function pickOutputDir(current: string): Promise<string | null> {
-  const p = await modals.showPicker({
-    mode: 'dir',
-    title: '选择输出目录',
-    startPath: current || dirs.outputDir,
-  })
-  if (!p) return null
-  await dirs.saveOutput(p)
-  return p
-}
-
-async function onExportSubmit(settings: ExportSettings) {
-  const project = store.project
-  if (!project) return
-  if (!hasAnyClip.value) {
-    alert('时间轴为空，无法导出')
-    return
-  }
-  // Frontend-side leading-gap pre-check so the user doesn't have to wait
-  // for the dryRun roundtrip to learn they're offending. Backend re-checks.
-  for (let i = 0; i < project.videoTracks.length; i++) {
-    const clips = project.videoTracks[i].clips
-    if (!clips.length) continue
-    const earliest = clips.reduce((m, c) => Math.min(m, c.programStart), Infinity)
-    if (earliest > 0.001) {
-      alert(`视频轨 ${i + 1} 开头必须有内容：第一个 clip 从 ${earliest.toFixed(2)}s 开始。\n请把它拖到 0 秒再导出。`)
-      return
-    }
-  }
-
-  await store.flushSave()
-  const body: MultitrackExportBody = { projectId: project.id, export: settings }
-
-  let dryRun: { command: string; outputPath: string }
-  try {
-    dryRun = await multitrackApi.exportPreview(body)
-  } catch (e) {
-    alert('生成命令失败: ' + (e instanceof Error ? e.message : String(e)))
-    return
-  }
-  if (!(await modals.showCommand(dryRun.command))) return
-
-  exportOpen.value = false
-  exportSidebarOpen.value = true
-  store.exportLocked = true
-
-  // Stop preview before the encoder starts: the in-page video/audio
-  // decoders compete with ffmpeg for CPU and disk I/O on the same source
-  // files (multiple sources, especially), and there's no value in keeping
-  // playback alive during a real export.
-  previewRef.value?.pause()
-
-  const sendStart = async (overwrite: boolean): Promise<string> => {
-    const { res, data } = await multitrackApi.startExport({ ...body, overwrite })
-    const payload = data as MultitrackExportStartResponse
-    if (res.status === 409 && payload.existing) {
-      const ok = await modals.showOverwrite(payload.path || '')
-      if (!ok) throw new Error('已取消覆盖')
-      return sendStart(true)
-    }
-    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`)
-    return payload.command || ''
-  }
-
-  try {
-    await job.startJob({
-      outputPath:
-        dryRun.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
-      totalDurationSec: store.programDuration,
-      request: () => sendStart(false),
-    })
-  } catch {
-    // job.startJob surfaces the error in its own panel; release the lock
-    // immediately so the user can fix and retry without a stale gate.
-    store.exportLocked = false
-  }
-}
-
-/**
- * job.running flips back to false on success / error / cancel; sync the
- * store flag so the UI unlocks the moment ffmpeg is done. Watching the
- * running ref is cheaper than wiring an onFinish callback through every
- * job.startJob call and matches the editor's implicit unlock behavior.
- */
-watch(
-  () => job.running.value,
-  (v) => {
-    if (!v) store.exportLocked = false
-  },
-)
-
-async function closeExportSidebar() {
-  if (job.running.value) {
-    if (!confirm('导出仍在进行中，关闭面板将取消导出。确认关闭？')) return
-    try {
-      await multitrackApi.cancelExport()
-    } catch {
-      // server may already be tearing down — fine to swallow.
-    }
-  }
-  exportSidebarOpen.value = false
-  store.exportLocked = false
+// Suppress browser context menu — right-click on ruler is range select.
+function onContextMenu(ev: MouseEvent) {
+  mouse.onContextMenu(ev)
 }
 
 // ---- Lifecycle ----
@@ -660,25 +583,14 @@ onMounted(() => {
   store.fetchList().catch(() => {})
 })
 
-onActivated(() => playback.attach())
-onDeactivated(() => {
-  playback.detach()
-  // Best-effort flush on tab switch so unsaved drops persist.
-  store.flushSave().catch(() => {})
+useTimelineLifecycle({
+  attach: () => playback.attach(),
+  detach: () => playback.detach(),
+  flushSave: () => store.flushSave(),
+  projectId: () => store.project?.id,
+  applyFit: () => zoom.applyFit(),
+  onProjectChange: () => warnIfSourcesMissing(),
 })
-onBeforeUnmount(() => {
-  playback.detach()
-  store.flushSave().catch(() => {})
-})
-
-watch(
-  () => store.project?.id,
-  () => {
-    if (!store.project) return
-    requestAnimationFrame(() => zoom.applyFit())
-    warnIfSourcesMissing()
-  },
-)
 
 /**
  * Probe each source URL with HEAD on project open. The backend returns
@@ -744,7 +656,7 @@ async function warnIfSourcesMissing() {
           v-if="hasProject"
           class="rounded bg-accent px-3 py-1 text-xs text-bg-base hover:bg-accent-hover disabled:opacity-50"
           :disabled="exportDisabled"
-          @click="exportOpen = true"
+          @click="exportFlow.openDialog()"
         >导出</button>
       </div>
     </div>
@@ -839,7 +751,7 @@ async function warnIfSourcesMissing() {
                 :px-per-second="store.pxPerSecond"
                 :total-sec="total"
                 :track-width="trackWidth"
-                @mousedown="onRulerMouseDown"
+                @mousedown="mouse.onRulerMouseDown"
               />
               <!-- Playhead segments that should overlap the ruler row. They
                    ride the ruler's X-scroll context so they stay aligned
@@ -849,7 +761,7 @@ async function warnIfSourcesMissing() {
                 :x="playheadX"
                 top="0"
                 height="28px"
-                @mousedown="onPlayheadMouseDown"
+                @mousedown="mouse.onPlayheadMouseDown"
               />
             </div>
           </div>
@@ -975,21 +887,21 @@ async function warnIfSourcesMissing() {
                   v-show="showPlayheadAll && store.project && total > 0"
                   :x="playheadX"
                   top="0"
-                  @mousedown="onPlayheadMouseDown"
+                  @mousedown="mouse.onPlayheadMouseDown"
                 />
                 <TimelinePlayhead
                   v-show="showPlayheadVideo && store.project && total > 0 && videoTracksData.length > 0"
                   :x="playheadX"
                   top="0"
                   :height="(videoTracksData.length * ROW_PX) + 'px'"
-                  @mousedown="onPlayheadMouseDown"
+                  @mousedown="mouse.onPlayheadMouseDown"
                 />
                 <TimelinePlayhead
                   v-show="showPlayheadAudio && store.project && total > 0 && audioTracksData.length > 0"
                   :x="playheadX"
                   :top="(videoTracksData.length * ROW_PX) + 'px'"
                   :height="(audioTracksData.length * ROW_PX) + 'px'"
-                  @mousedown="onPlayheadMouseDown"
+                  @mousedown="mouse.onPlayheadMouseDown"
                 />
                 <TimelinePlayhead
                   v-if="singleTrackScopeBodyTop !== null"
@@ -997,7 +909,7 @@ async function warnIfSourcesMissing() {
                   :x="playheadX"
                   :top="singleTrackScopeBodyTop + 'px'"
                   :height="ROW_PX + 'px'"
-                  @mousedown="onPlayheadMouseDown"
+                  @mousedown="mouse.onPlayheadMouseDown"
                 />
               </div>
             </div>
@@ -1015,19 +927,19 @@ async function warnIfSourcesMissing() {
            same as the editor — so we drop it as a sibling of the main
            column rather than overlaying. -->
       <ExportSidebar
-        :open="exportSidebarOpen"
-        :running="job.running.value"
-        :state-label="job.stateLabel.value"
-        :log="job.log.value"
-        :progress="job.progress.value"
-        :progress-visible="job.progressVisible.value"
-        :finish-visible="job.finishVisible.value"
-        :finish-kind="job.finishKind.value"
-        :finish-text="job.finishText.value"
-        :has-output-path="!!job.lastOutputPath.value"
-        @close="closeExportSidebar"
-        @cancel="job.cancel"
-        @reveal="job.revealOutput"
+        :open="exportFlow.sidebarOpen.value"
+        :running="exportFlow.job.running.value"
+        :state-label="exportFlow.job.stateLabel.value"
+        :log="exportFlow.job.log.value"
+        :progress="exportFlow.job.progress.value"
+        :progress-visible="exportFlow.job.progressVisible.value"
+        :finish-visible="exportFlow.job.finishVisible.value"
+        :finish-kind="exportFlow.job.finishKind.value"
+        :finish-text="exportFlow.job.finishText.value"
+        :has-output-path="!!exportFlow.job.lastOutputPath.value"
+        @close="exportFlow.closeSidebar"
+        @cancel="exportFlow.job.cancel"
+        @reveal="exportFlow.job.revealOutput"
       />
     </div>
 
@@ -1042,12 +954,12 @@ async function warnIfSourcesMissing() {
     />
 
     <ExportDialog
-      :open="exportOpen"
+      :open="exportFlow.dialogOpen.value"
       :defaults="exportDefaults"
-      :pick-dir="pickOutputDir"
+      :pick-dir="exportFlow.pickOutputDir"
       title="导出多轨工程"
-      @close="exportOpen = false"
-      @submit="onExportSubmit"
+      @close="exportFlow.dialogOpen.value = false"
+      @submit="exportFlow.submit"
     />
   </section>
 </template>

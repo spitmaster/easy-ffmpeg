@@ -2,7 +2,7 @@
 
 > 模块代码结构、SOLID 分层、接口契约、独立编译路径。对应产品设计:[product.md](product.md)。共享后端模块见 [core/modules.md](../../core/modules.md);前端架构见 [core/frontend.md](../../core/frontend.md)。
 >
-> **v0.6.0 架构抽取(M3 完成)**:`Clip` / 时间轴纯函数(`Split`/`DeleteClip`/`Reorder`/`TrimLeft`/`TrimRight`/`SetProgramStart`/`ClipAtProgramTime`)/ 单轨 filter 构造(`BuildVideoTrackFilter`/`BuildAudioTrackFilter`/`PlanSegments`)/ codec 归一化 / `ExportSettings` / 通用 ports(`Clock`/`JobRunner`/`PathResolver`)已抽到 [editor/common/](../../../editor/common/),与 `multitrack/` 共用。`editor/domain/` 通过 type alias + 函数变量 re-export 保持外部 API 表面字节级不变。本文档继续作为单视频专属语义(`Project` / `Source` / schema 迁移 / `BuildExportArgs` 整体装配)的描述。
+> **v0.5.0 架构抽取(M3 完成)**:`Clip` / 时间轴纯函数(`Split`/`DeleteClip`/`Reorder`/`TrimLeft`/`TrimRight`/`SetProgramStart`/`ClipAtProgramTime`)/ 单轨 filter 构造(`BuildVideoTrackFilter`/`BuildAudioTrackFilter`/`PlanSegments`)/ codec 归一化 / `ExportSettings` / 通用 ports(`Clock`/`JobRunner`/`PathResolver`)已抽到 [editor/common/](../../../editor/common/),与 `multitrack/` 共用。`editor/domain/` 通过 type alias + 函数变量 re-export 保持外部 API 表面字节级不变。本文档继续作为单视频专属语义(`Project` / `Source` / schema 迁移 / `BuildExportArgs` 整体装配)的描述。
 
 ---
 
@@ -30,7 +30,7 @@ editor/
 │   ├── export.go                   BuildExportArgs(Project) → []string
 │   └── export_test.go
 │
-├── ports/                          单视频专属端口(v0.6.0+ 收窄)
+├── ports/                          单视频专属端口(v0.5.0+ 收窄)
 │   ├── repository.go               ProjectRepository 接口(依赖 domain.Project)
 │   └── prober.go                   VideoProber 接口
 │   # JobRunner / PathResolver / Clock 已抽到 editor/common/ports/(多轨共用)

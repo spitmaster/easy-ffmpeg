@@ -71,7 +71,12 @@ async function start() {
     body = impl.readBody()
     impl.validate(body)
   } catch (e) {
-    alert(e instanceof Error ? e.message : String(e))
+    await modals.showConfirm({
+      title: '提示',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
     return
   }
   const outputPath = impl.getOutputPath(body)
@@ -80,7 +85,12 @@ async function start() {
   try {
     preview = await audioApi.preview(body)
   } catch (e) {
-    alert('生成命令失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '生成命令失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
     return
   }
   if (!(await modals.showCommand(preview))) return

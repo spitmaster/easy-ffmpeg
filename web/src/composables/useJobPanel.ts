@@ -1,6 +1,7 @@
 import { ref, onUnmounted, type Ref } from 'vue'
 import { jobBus, type JobEvent } from '@/api/jobs'
 import { fsApi } from '@/api/fs'
+import { useModalsStore } from '@/stores/modals'
 
 export type FinishKind = 'success' | 'error' | 'cancelled'
 
@@ -44,6 +45,8 @@ export function useJobPanel(opts: JobPanelOptions) {
     errorLabel = '✗ 失败',
     cancelledLabel = '! 已取消',
   } = opts
+
+  const modals = useModalsStore()
 
   const running = ref(false)
   const stateLabel = ref(idleLabel)
@@ -150,7 +153,12 @@ export function useJobPanel(opts: JobPanelOptions) {
       await fsApi.reveal(lastOutputPath.value)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      alert('打开失败: ' + msg)
+      await modals.showConfirm({
+        title: '打开失败',
+        message: msg,
+        okText: '我知道了',
+        hideCancel: true,
+      })
     }
   }
 

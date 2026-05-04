@@ -1,4 +1,4 @@
-# 前端 Vue 化改造方案(v0.5.x)
+# 前端 Vue 化改造方案(v0.5.0)
 
 > 本文档定义把现有原生 HTML+JS 前端(`server/web/`)迁移到 Vue 3 + Vite + TypeScript 的完整路径。改造的真正目的是**为后续多轨剪辑器(类 Premiere Pro)做技术储备**——多轨编辑器的状态复杂度(轨道 × clip × 选择 × 播放头 × 撤销栈 × 拖拽预览)用原生 JS 维护成本会指数级增长,框架是必经之路。
 
@@ -15,7 +15,7 @@
 | 样式方案 | **TailwindCSS + 自建组件**(不用通用 UI 库) | Element Plus / Naive UI 等为后台管理设计,与 Premiere 风格暗色密集界面冲突 |
 | 时间轴渲染 | **Canvas(预留 Konva 或 Pixi)** | DOM 在百级 clip 后开始卡;先不引入,M3 评估 |
 | 迁移策略 | **增量迁移,不一次性重写** | 老 UI 保持可用,新 UI 跑通后逐 tab 平移 |
-| 版本切分 | **v0.5.0 = M1+M2**,**v0.5.1 = M3+M4** | 每个发版都有用户可见进展(详见 §9) |
+| 版本切分 | **v0.5.0 = M1+M2+M3+M4** | 一次性发版到 v0.5.0(详见 §9) |
 | 桌面 splash | **不 Vue 化** | 启动画面要尽可能快,引入框架反而拖慢(详见 §9) |
 | 测试 / 代码风格 | 本轮不引入 Vitest;ESLint + Prettier 最小集 | 优先把功能跑起来,避免节奏被工具配置拖慢(详见 §9) |
 
@@ -342,7 +342,7 @@ web/dist/         # ★ 构建产物,不入 git
 - ✅ 文件浏览器 / 路径补全行为一致
 - ✅ 任务进度轮询、错误提示、完成后打开输出目录都正常
 
-### M3 — 音频 Tab + 单视频剪辑 Tab 迁移(v0.5.1,预计 3–4 天)
+### M3 — 音频 Tab + 单视频剪辑 Tab 迁移(v0.5.0,预计 3–4 天)
 
 **范围**
 
@@ -356,7 +356,7 @@ web/dist/         # ★ 构建产物,不入 git
 - ✅ 三个 tab 全部用 Vue 实现,功能等价
 - ✅ 老的 [server/web/app.js](../../server/web/app.js) / [server/web/editor/](../../server/web/editor/) 不再被任何代码引用
 
-### M4 — 清理(v0.5.1,预计 0.5 天)
+### M4 — 清理(v0.5.0,预计 0.5 天)
 
 **范围**
 
@@ -364,7 +364,7 @@ web/dist/         # ★ 构建产物,不入 git
 - `.gitignore` 已包含 `web/dist/` 与 `web/node_modules/`
 - 设计文档同步:[docs/core/architecture.md](architecture.md)、[CLAUDE.md](../../CLAUDE.md) 更新前端章节(指向 `web/`)
 - **重写或删除已过时的 [frontend.md](frontend.md) 与 [ui-system.md](ui-system.md)**(它们描述的是已被替换的零构建 IIFE 架构,M2 完成后内容大部分已失效)
-- 路线图加 v0.5.x 行(M4 完成时本目录路线图位于 `core/roadmap.md`,后于规划文档重组中迁至顶层 [../roadmap.md](../roadmap.md))
+- 路线图加 v0.5.0 行(M4 完成时本目录路线图位于 `core/roadmap.md`,后于规划文档重组中迁至顶层 [../roadmap.md](../roadmap.md))
 - [docs/milestones.md](../milestones.md):把"前端 Vue 化迁移"整段移到底部"已归档"区
 
 **验收**
@@ -407,7 +407,7 @@ web/dist/         # ★ 构建产物,不入 git
 
 | # | 议题 | 决策 | 理由 |
 |---|------|------|------|
-| 1 | 版本切分 | **v0.5.0 = M1+M2**,**v0.5.1 = M3+M4** | 每个发版都有用户可见进展;v0.5.0 出来时三 tab 已有"转换"功能跑在新栈上,可以提前暴露问题 |
+| 1 | 版本切分 | **v0.5.0 = M1+M2+M3+M4** | 一次性发版到 v0.5.0 |
 | 2 | 是否本轮引入 Vitest 单元测试 | **不引入** | 与"先跑起来"节奏冲突;留到多轨剪辑器开工时单独评估 |
 | 3 | 桌面版 splash 是否 Vue 化 | **不** | splash 是启动画面(见下文说明),加载越快越好,引入 Vue 运行时反而拖慢 |
 | 4 | ESLint + Prettier | **最小集** | Prettier 默认配置 + Vue 官方 ESLint preset,避免风格争议又不过度配置 |
@@ -432,7 +432,7 @@ splash 的核心目标是**尽可能快地让用户看到画面**,这正好是 V
 
 - [architecture.md](architecture.md):前端章节(若有)更新,新增 `web/` 入口说明
 - [build.md](build.md):§2.1 构建脚本核心逻辑加 `build_frontend`;§8 桌面版构建说明前端依赖
-- [roadmap.md](roadmap.md):新增 v0.5.x 里程碑行
+- [roadmap.md](roadmap.md):新增 v0.5.0 里程碑行
 - [README.md](../README.md):索引表加本文档
 - [CLAUDE.md](../../CLAUDE.md):前端章节(若有)更新
 

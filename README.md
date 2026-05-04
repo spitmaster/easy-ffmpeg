@@ -14,7 +14,7 @@
 ## 技术栈
 
 - **后端**:Go 1.21+,纯 Go 静态链接;`net/http` + SSE
-- **前端**(v0.5.x+):Vue 3 + Vite + TypeScript + Pinia + Vue Router + TailwindCSS,工程在 [web/](web/),产物 `web/dist/` 由 [web/embed.go](web/embed.go) 用 `//go:embed all:dist` 嵌入
+- **前端**(v0.5.0+):Vue 3 + Vite + TypeScript + Pinia + Vue Router + TailwindCSS,工程在 [web/](web/),产物 `web/dist/` 由 [web/embed.go](web/embed.go) 用 `//go:embed all:dist` 嵌入
 - **桌面版**(v0.4.0+):Wails v2,与 Web 版共享同一份后端字节
 - **嵌入 FFmpeg**:[internal/embedded/](internal/embedded/) 按平台 7z 分片,首次启动解压
 

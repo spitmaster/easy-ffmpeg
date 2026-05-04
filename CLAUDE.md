@@ -17,7 +17,7 @@ docs/todo/<branch_name with "/" → "_">.md
 |------|-----------------|-----------|
 | `multitrack` | `docs/milestones/multitrack.md` | `docs/todo/multitrack.md` |
 | `feature/foo/bar` | `docs/milestones/feature_foo_bar.md` | `docs/todo/feature_foo_bar.md` |
-| `v0.5.1` | `docs/milestones/v0.5.1.md`(可能在 archive/) | `docs/todo/v0.5.1.md` |
+| `v0.5.0` | `docs/milestones/v0.5.0.md`(可能在 archive/) | `docs/todo/v0.5.0.md` |
 
 **接手序列**:
 
@@ -71,7 +71,7 @@ docs/
 │   ├── frontend.md      (程序)Vue 3 工程、API 客户端层、Pinia store、SSE、useJobPanel
 │   ├── build.md         (程序)构建脚本(npm + go)、7z 嵌入、桌面版构建
 │   ├── desktop.md       (程序)v0.4.0 双产物拓扑、Wails 外壳、cgo 隔离
-│   └── frontend-vue-migration.md (历史)v0.5.x Vue 化迁移方案,落地见 frontend.md
+│   └── frontend-vue-migration.md (历史)v0.5.0 Vue 化迁移方案,落地见 frontend.md
 └── tabs/
     ├── convert/{product,program}.md  视频转换
     ├── audio/{product,program}.md    音频处理(三模式)
@@ -121,7 +121,7 @@ docs/
 
 - [cmd/](cmd/) — 入口(Web `main.go` + `desktop/`)
 - [server/](server/) — HTTP 服务、路由、handlers;通过 `import "easy-ffmpeg/web"` 拿前端资源
-- [web/](web/) — 前端工程(v0.5.x+,Vue 3 + Vite + TS + Pinia + Tailwind);源码 `web/src/`,产物 `web/dist/` 由 `web/embed.go` 用 `//go:embed all:dist` 嵌入
+- [web/](web/) — 前端工程(v0.5.0+,Vue 3 + Vite + TS + Pinia + Tailwind);源码 `web/src/`,产物 `web/dist/` 由 `web/embed.go` 用 `//go:embed all:dist` 嵌入
 - [editor/](editor/) — 单视频剪辑器(SOLID 分层:`domain`/`api`/`ports`/`storage`)
 - [editor/common/](editor/common/) — 单视频与多轨共享的纯函数与端口(`domain`:Clip / PlanSegments / BuildVideoTrackFilter / BuildAudioTrackFilter / Split-Delete-Reorder-Trim / ValidateClips;`ports`:clock/runner/paths)
 - [multitrack/](multitrack/) — 多轨剪辑器(类 Premiere Pro,SOLID 分层:`domain`/`api`/`ports`/`storage`),复用 `editor/common/`

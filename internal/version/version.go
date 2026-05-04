@@ -11,4 +11,4 @@ package version
 
 // Version is the application's user-facing version string. Treated as a
 // var (not const) so release builds can override it via -ldflags -X.
-var Version = "0.6.0"
+var Version = "0.5.0"

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, toRef, useTemplateRef, watch } from 'vue'
+import { computed, ref, toRef, useTemplateRef } from 'vue'
 import {
   editorApi,
   TRACK_AUDIO,
   TRACK_VIDEO,
+  type ExportBody,
   type Project,
   type Track,
 } from '@/api/editor'
@@ -13,8 +14,10 @@ import { useEditorStore, Sel } from '@/stores/editor'
 import { useModalsStore } from '@/stores/modals'
 import { useEditorOps } from '@/composables/useEditorOps'
 import { useEditorPreview } from '@/composables/useEditorPreview'
-import { useJobPanel } from '@/composables/useJobPanel'
+import { useExportFlow } from '@/composables/useExportFlow'
 import { useTimelineDrag } from '@/composables/timeline/useTimelineDrag'
+import { useTimelineLifecycle } from '@/composables/timeline/useTimelineLifecycle'
+import { useTimelineMouseHandlers } from '@/composables/timeline/useTimelineMouseHandlers'
 import { useTimelinePlayback } from '@/composables/timeline/useTimelinePlayback'
 import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeSelect'
 import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
@@ -52,16 +55,6 @@ const preview = useEditorPreview(videoRef, audioRef)
 // ---- Project / panels ----
 
 const projectsOpen = ref(false)
-const exportOpen = ref(false)
-const exportSidebarOpen = ref(false)
-
-const job = useJobPanel({
-  cancelUrl: '/api/editor/export/cancel',
-  runningLabel: '导出中...',
-  doneLabel: '✓ 导出完成',
-  errorLabel: '✗ 导出失败',
-  cancelledLabel: '! 导出已取消',
-})
 
 const hasProject = computed(() => !!store.project)
 
@@ -94,6 +87,52 @@ const audioVolume = computed({
   },
 })
 
+// ---- Export (dialog + sidebar + job, all in one composable) ----
+
+const exportDefaults = computed<ExportSettings>(() => {
+  const e = store.project?.export
+  return {
+    format: e?.format || 'mp4',
+    videoCodec: e?.videoCodec || 'h264',
+    audioCodec: e?.audioCodec || 'aac',
+    outputDir: e?.outputDir || dirs.outputDir || '',
+    outputName: e?.outputName || store.project?.name || 'edit',
+  }
+})
+
+const exportFlow = useExportFlow<Project, ExportBody>({
+  getProject: () => store.project,
+  defaults: exportDefaults,
+  validate: (project, _settings) => {
+    const vClips = project.videoClips || []
+    const aClips = project.audioClips || []
+    if (!vClips.length && !aClips.length) return '时间轴为空，无法导出'
+    if (vClips.length) {
+      const t = vClips.reduce((m, c) => Math.min(m, c.programStart), Infinity)
+      if (t > 0.001) {
+        return `视频轨道开头必须有内容：第一个 clip 从 ${t.toFixed(2)}s 开始。\n请把它拖到 0 秒再导出。`
+      }
+    }
+    return null
+  },
+  flushSave: () => store.flushSave(),
+  buildBody: (project, settings) => ({ projectId: project.id, export: settings }),
+  api: {
+    exportPreview: editorApi.exportPreview,
+    startExport: editorApi.startExport,
+    cancelExport: editorApi.cancelExport,
+  },
+  totalDurationSec: () => totalDuration(store.project),
+  pausePreview: () => preview.pause(),
+  jobOptions: {
+    cancelUrl: '/api/editor/export/cancel',
+    runningLabel: '导出中...',
+    doneLabel: '✓ 导出完成',
+    errorLabel: '✗ 导出失败',
+    cancelledLabel: '! 导出已取消',
+  },
+})
+
 // ---- Timeline composables ----
 
 const zoom = useTimelineZoom({
@@ -121,7 +160,7 @@ const drag = useTimelineDrag({
 })
 
 // rulerEl is the TimelineRuler component's exposed root <div>, fed to
-// useTimelineRangeSelect / clientXToTime for client-x → seconds math.
+// useTimelineRangeSelect / useTimelineMouseHandlers for client-x → seconds math.
 const rulerEl = computed(() => rulerCmp.value?.rootEl ?? null)
 const rangeSelect = useTimelineRangeSelect({
   rulerEl,
@@ -137,7 +176,7 @@ const rangeSelect = useTimelineRangeSelect({
 })
 
 const playback = useTimelinePlayback({
-  isLocked: () => job.running.value,
+  isLocked: () => exportFlow.running.value,
   togglePlay: () => preview.toggle(),
   splitAtPlayhead: () => ops.splitAtPlayhead(),
   deleteSelection: () => ops.deleteSelection(),
@@ -150,52 +189,24 @@ const playback = useTimelinePlayback({
   },
 })
 
-// ---- Timeline mouse handlers (assemble shared composables) ----
+// ---- Timeline mouse handlers (delegated) ----
 
-function clientXToTime(clientX: number, clamp = true): number {
-  const r = rulerEl.value
-  if (!r) return 0
-  const rect = r.getBoundingClientRect()
-  const x = clientX - rect.left
-  const t = x / store.pxPerSecond
-  if (!clamp) return t
-  return Math.max(0, Math.min(total.value, t))
-}
-
-function startScrubDrag(ev: MouseEvent) {
-  ev.preventDefault()
-  const wasPlaying = store.playing
-  if (wasPlaying) preview.pause()
-  preview.seek(clientXToTime(ev.clientX))
-  function onMove(e: MouseEvent) {
-    preview.seek(clientXToTime(e.clientX))
-  }
-  function onUp() {
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
-    if (wasPlaying) preview.play()
-  }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
-}
-
-function onRulerMouseDown(ev: MouseEvent) {
-  if (ev.button === 2) {
-    rangeSelect.start(ev)
-    return
-  }
-  store.splitScope = 'both'
-  store.selection = []
-  store.rangeSelection = null
-  startScrubDrag(ev)
-}
-
-function onPlayheadMouseDown(ev: MouseEvent) {
-  if (ev.button !== 0) return
-  ev.stopPropagation()
-  if (store.rangeSelection) store.rangeSelection = null
-  startScrubDrag(ev)
-}
+const mouse = useTimelineMouseHandlers({
+  rulerEl,
+  pxPerSecond: () => store.pxPerSecond,
+  totalSec: () => total.value,
+  isPlaying: () => store.playing,
+  preview,
+  onRangeStart: (ev) => rangeSelect.start(ev),
+  beforeScrubFromRuler: () => {
+    store.splitScope = 'both'
+    store.selection = []
+    store.rangeSelection = null
+  },
+  beforeScrubFromPlayhead: () => {
+    if (store.rangeSelection) store.rangeSelection = null
+  },
+})
 
 function onTrackMouseDown(
   trackId: Track,
@@ -209,7 +220,7 @@ function onTrackMouseDown(
     // Empty area → narrow split scope to this track + scrub.
     store.splitScope = trackId
     store.selection = []
-    startScrubDrag(ev)
+    mouse.startScrubDrag(ev)
     return
   }
   const multi = ev.shiftKey || ev.ctrlKey || ev.metaKey
@@ -224,11 +235,6 @@ function onTrackMouseDown(
   }
 }
 
-// Suppress browser context menu — right-click is repurposed for range select.
-function onContextMenu(ev: MouseEvent) {
-  ev.preventDefault()
-}
-
 // ---- Project lifecycle ----
 
 async function openVideo() {
@@ -241,7 +247,12 @@ async function openVideo() {
     if (dir) await dirs.saveInput(dir)
     loadProject(project)
   } catch (e) {
-    alert('创建工程失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '创建工程失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 
@@ -250,7 +261,12 @@ async function loadProjectById(id: string) {
     const project = await editorApi.getProject(id)
     loadProject(project)
   } catch (e) {
-    alert('加载工程失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '加载工程失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 
@@ -303,130 +319,29 @@ async function deleteProject(id: string) {
   await editorApi.deleteProject(id)
 }
 
-// ---- Export ----
-
-const exportDefaults = computed<ExportSettings>(() => {
-  const e = store.project?.export
-  return {
-    format: e?.format || 'mp4',
-    videoCodec: e?.videoCodec || 'h264',
-    audioCodec: e?.audioCodec || 'aac',
-    outputDir: e?.outputDir || dirs.outputDir || '',
-    outputName: e?.outputName || store.project?.name || 'edit',
-  }
-})
-
-async function pickOutputDir(current: string): Promise<string | null> {
-  const p = await modals.showPicker({
-    mode: 'dir',
-    title: '选择输出目录',
-    startPath: current || dirs.outputDir,
-  })
-  if (!p) return null
-  await dirs.saveOutput(p)
-  return p
-}
-
-async function onExportSubmit(settings: ExportSettings) {
-  const project = store.project
-  if (!project) return
-  const vClips = project.videoClips || []
-  const aClips = project.audioClips || []
-  if (!vClips.length && !aClips.length) {
-    alert('时间轴为空，无法导出')
-    return
-  }
-  if (vClips.length) {
-    const t = vClips.reduce((m, c) => Math.min(m, c.programStart), Infinity)
-    if (t > 0.001) {
-      alert(`视频轨道开头必须有内容：第一个 clip 从 ${t.toFixed(2)}s 开始。\n请把它拖到 0 秒再导出。`)
-      return
-    }
-  }
-
-  await store.flushSave()
-  const body = { projectId: project.id, export: settings }
-
-  let dryRun: { command: string; outputPath: string }
-  try {
-    dryRun = await editorApi.exportPreview(body)
-  } catch (e) {
-    alert('生成命令失败: ' + (e instanceof Error ? e.message : String(e)))
-    return
-  }
-  if (!(await modals.showCommand(dryRun.command))) return
-
-  exportOpen.value = false
-  exportSidebarOpen.value = true
-
-  // Stop the preview playback before ffmpeg starts: the in-page video/audio
-  // decoder competes with the encoder for CPU and disk I/O on the same
-  // source file, and there's no reason to keep playback running during export.
-  preview.pause()
-
-  const sendStart = async (overwrite: boolean): Promise<string> => {
-    const { res, data } = await editorApi.startExport({ ...body, overwrite })
-    if (res.status === 409 && data.existing) {
-      const ok = await modals.showOverwrite(data.path || '')
-      if (!ok) throw new Error('已取消覆盖')
-      return sendStart(true)
-    }
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-    return data.command || ''
-  }
-
-  await job.startJob({
-    outputPath:
-      dryRun.outputPath || Path.join(settings.outputDir, settings.outputName + '.' + settings.format),
-    totalDurationSec: totalDuration(project),
-    request: () => sendStart(false),
-  })
-}
-
-async function closeExportSidebar() {
-  if (job.running.value) {
-    if (!confirm('导出仍在进行中，关闭面板将取消导出。确认关闭？')) return
-    try {
-      await editorApi.cancelExport()
-    } catch {
-      // server may already be tearing down
-    }
-  }
-  exportSidebarOpen.value = false
-}
-
 // ---- Lifecycle ----
 
-// Use activated/deactivated rather than mounted/beforeUnmount: with
-// KeepAlive in App.vue this view stays mounted across tab switches, but
-// the document-level shortcuts (Space, S, Delete, Ctrl+Z, …) must only
-// fire while the editor is the visible tab — otherwise hitting Space
-// in Convert/Audio would toggle preview playback in the background.
-onActivated(() => playback.attach())
-onDeactivated(() => playback.detach())
-onBeforeUnmount(() => {
-  playback.detach()
-  // Best-effort flush: don't await to keep navigation snappy.
-  store.flushSave().catch(() => {})
+useTimelineLifecycle({
+  attach: () => playback.attach(),
+  detach: () => playback.detach(),
+  flushSave: () => store.flushSave(),
+  projectId: () => store.project?.id,
+  applyFit: () => zoom.applyFit(),
 })
 
-// Re-fit on project switch.
-watch(
-  () => store.project?.id,
-  () => {
-    if (!store.project) return
-    requestAnimationFrame(() => zoom.applyFit())
-  },
-)
+// Suppress browser context menu — right-click is repurposed for range select.
+function onContextMenu(ev: MouseEvent) {
+  mouse.onContextMenu(ev)
+}
 </script>
 
 <template>
   <section class="flex h-full flex-col">
     <EditorTopBar
-      :locked="job.running.value"
+      :locked="exportFlow.running.value"
       @open-video="openVideo"
       @open-projects="projectsOpen = true"
-      @open-export="exportOpen = true"
+      @open-export="exportFlow.openDialog()"
     />
 
     <div class="flex flex-1 overflow-hidden">
@@ -500,7 +415,7 @@ watch(
                 :px-per-second="store.pxPerSecond"
                 :total-sec="total"
                 :track-width="trackWidth"
-                @mousedown="onRulerMouseDown"
+                @mousedown="mouse.onRulerMouseDown"
               />
 
               <TimelineTrackRow
@@ -529,21 +444,21 @@ watch(
               <TimelinePlayhead
                 v-show="store.project && store.splitScope === 'both'"
                 :x="playheadX"
-                @mousedown="onPlayheadMouseDown"
+                @mousedown="mouse.onPlayheadMouseDown"
               />
               <TimelinePlayhead
                 v-show="store.project && store.splitScope === TRACK_VIDEO"
                 :x="playheadX"
                 top="28px"
                 height="48px"
-                @mousedown="onPlayheadMouseDown"
+                @mousedown="mouse.onPlayheadMouseDown"
               />
               <TimelinePlayhead
                 v-show="store.project && store.splitScope === TRACK_AUDIO"
                 :x="playheadX"
                 top="76px"
                 height="48px"
-                @mousedown="onPlayheadMouseDown"
+                @mousedown="mouse.onPlayheadMouseDown"
               />
             </div>
           </div>
@@ -559,7 +474,7 @@ watch(
              cancel the export, but can't accidentally edit clips while
              ffmpeg is running. -->
         <div
-          v-if="job.running.value"
+          v-if="exportFlow.running.value"
           class="pointer-events-auto absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-bg-base/60 backdrop-blur-[2px]"
         >
           <div class="text-sm text-fg-muted">导出中,编辑已锁定</div>
@@ -571,19 +486,19 @@ watch(
 
       <!-- Right: export log sidebar (visible only during/after export) -->
       <ExportSidebar
-        :open="exportSidebarOpen"
-        :running="job.running.value"
-        :state-label="job.stateLabel.value"
-        :log="job.log.value"
-        :progress="job.progress.value"
-        :progress-visible="job.progressVisible.value"
-        :finish-visible="job.finishVisible.value"
-        :finish-kind="job.finishKind.value"
-        :finish-text="job.finishText.value"
-        :has-output-path="!!job.lastOutputPath.value"
-        @close="closeExportSidebar"
-        @cancel="job.cancel"
-        @reveal="job.revealOutput"
+        :open="exportFlow.sidebarOpen.value"
+        :running="exportFlow.job.running.value"
+        :state-label="exportFlow.job.stateLabel.value"
+        :log="exportFlow.job.log.value"
+        :progress="exportFlow.job.progress.value"
+        :progress-visible="exportFlow.job.progressVisible.value"
+        :finish-visible="exportFlow.job.finishVisible.value"
+        :finish-kind="exportFlow.job.finishKind.value"
+        :finish-text="exportFlow.job.finishText.value"
+        :has-output-path="!!exportFlow.job.lastOutputPath.value"
+        @close="exportFlow.closeSidebar"
+        @cancel="exportFlow.job.cancel"
+        @reveal="exportFlow.job.revealOutput"
       />
     </div>
 
@@ -598,11 +513,11 @@ watch(
     />
 
     <ExportDialog
-      :open="exportOpen"
+      :open="exportFlow.dialogOpen.value"
       :defaults="exportDefaults"
-      :pick-dir="pickOutputDir"
-      @close="exportOpen = false"
-      @submit="onExportSubmit"
+      :pick-dir="exportFlow.pickOutputDir"
+      @close="exportFlow.dialogOpen.value = false"
+      @submit="exportFlow.submit"
     />
   </section>
 </template>

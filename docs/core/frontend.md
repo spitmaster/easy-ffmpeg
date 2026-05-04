@@ -2,7 +2,7 @@
 
 > 本文档定义前端的技术栈、目录组织、API 客户端层、Pinia store、composable、SSE 通道、解压进度轮询。视觉规范、控件外观、对话框约定见 [ui-system.md](ui-system.md)。
 >
-> v0.5.x 起,前端是一个独立的 Vue 3 + Vite + TypeScript 工程,源码与构建产物都在仓库根的 `web/` 目录下;Go 端通过 `easy-ffmpeg/web` 包消费 `web/dist/`。前端从此走"npm install + npm run build → go build"的两段式构建,见 [build.md §2](build.md)。
+> v0.5.0 起,前端是一个独立的 Vue 3 + Vite + TypeScript 工程,源码与构建产物都在仓库根的 `web/` 目录下;Go 端通过 `easy-ffmpeg/web` 包消费 `web/dist/`。前端从此走"npm install + npm run build → go build"的两段式构建,见 [build.md §2](build.md)。
 
 ## 1. 技术栈
 

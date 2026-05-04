@@ -2,13 +2,13 @@
 
 > 本文档定义跨 Tab 共用的视觉规范、设计 token、控件家族、对话框约定、导出体验流。各 Tab 的具体布局见对应的 `tabs/<tab>/product.md`。前端工程结构、Pinia store、composable 实现细节见 [frontend.md](frontend.md)。
 >
-> v0.5.x 起,样式从手写 CSS + CSS 变量整体迁到 **TailwindCSS + tokens.css**:配色 / 字体 / 圆角 / 阴影通过 `:root` CSS 变量集中,Tailwind 在 `tailwind.config.js` 用 `rgb(var(--…) / <alpha-value>)` 把它们暴露成 utility class。
+> v0.5.0 起,样式从手写 CSS + CSS 变量整体迁到 **TailwindCSS + tokens.css**:配色 / 字体 / 圆角 / 阴影通过 `:root` CSS 变量集中,Tailwind 在 `tailwind.config.js` 用 `rgb(var(--…) / <alpha-value>)` 把它们暴露成 utility class。
 
 ## 1. 整体布局
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│  🎬  Easy FFmpeg     v0.5.1     FFmpeg 8.1 · 嵌入    退出     │  ← TopBar
+│  🎬  Easy FFmpeg     v0.5.0     FFmpeg 8.1 · 嵌入    退出     │  ← TopBar
 ├──────────────────────────────────────────────────────────────┤
 │  [视频转换][音频处理][单视频剪辑][媒体信息*][设置*]              │  ← TabNav (* 占位)
 ├──────────────────────────────────────────────────────────────┤

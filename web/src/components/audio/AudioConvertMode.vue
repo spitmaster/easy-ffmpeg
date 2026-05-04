@@ -73,7 +73,12 @@ async function openOutputDir() {
   try {
     await fsApi.reveal(form.outputDir)
   } catch (e) {
-    alert('打开失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '打开失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 

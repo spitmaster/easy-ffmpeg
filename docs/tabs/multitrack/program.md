@@ -597,6 +597,6 @@ mtMod.Register(mux, "/api/multitrack")
 | **M6** 多源导入 + 多轨渲染 | 素材库 / 拖入时间轴 / 自动建轨 / N 条轨道渲染;预览仅顶层视频轨 | M5 完成 |
 | **M7** 多源剪辑操作 | split/delete/trim/range/undo/redo 在多轨模型上跑通;**跨轨拖动**(同类型) | M6 完成 |
 | **M8** 导出 v1 | `BuildExportArgs` overlay+amix;dryRun / 命令预览 / 真实导出 / 取消 / 覆盖确认全流程 | M7 完成 |
-| **M9** 收尾 | 文档归档 / 主索引更新 / `roadmap.md §4` 加 0.6.0 行 / 版本号 bump 0.6.0 / 单视频 Tab 零回归再确认 | M8 完成 |
+| **M9** 收尾 | 文档归档 / 主索引更新 / `roadmap.md §4` 加 0.5.0 行 / 版本号 bump 0.5.0 / 单视频 Tab 零回归再确认 | M8 完成 |
 
 > 注:原 multitrack.md 中的"M9 视频叠加 / PiP" 推迟到 v2(0.7.x);v1 视频叠加只到 z-order 全屏 overlay,不含 position/scale/opacity。

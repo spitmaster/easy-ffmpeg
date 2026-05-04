@@ -95,14 +95,21 @@ async function openOutputDir() {
   try {
     await fsApi.reveal(form.outputDir)
   } catch (e) {
-    alert('打开失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '打开失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 
 async function start() {
-  if (!form.inputPath) return alert('请选择输入文件')
-  if (!form.outputDir) return alert('请选择输出目录')
-  if (!form.outputName) return alert('请输入输出文件名')
+  const warn = (msg: string) =>
+    modals.showConfirm({ title: '提示', message: msg, okText: '我知道了', hideCancel: true })
+  if (!form.inputPath) return await warn('请选择输入文件')
+  if (!form.outputDir) return await warn('请选择输出目录')
+  if (!form.outputName) return await warn('请输入输出文件名')
 
   const body: ConvertBody = {
     inputPath: form.inputPath,
@@ -120,7 +127,12 @@ async function start() {
     preview = await convertApi.preview(body)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    alert('生成命令失败: ' + msg)
+    await modals.showConfirm({
+      title: '生成命令失败',
+      message: msg,
+      okText: '我知道了',
+      hideCancel: true,
+    })
     return
   }
   if (!(await modals.showCommand(preview))) return

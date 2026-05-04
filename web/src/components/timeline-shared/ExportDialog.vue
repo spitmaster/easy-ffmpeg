@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
 import type { ExportSettings } from '@/types/timeline'
+import { useModalsStore } from '@/stores/modals'
+
+const modals = useModalsStore()
 
 /**
  * Export dialog. Parameterized over the picker callback so single-video
@@ -46,13 +49,23 @@ async function onPickDir() {
   if (p) form.outputDir = p
 }
 
-function submit() {
+async function submit() {
   if (!form.outputDir) {
-    alert('请选择输出目录')
+    await modals.showConfirm({
+      title: '提示',
+      message: '请选择输出目录',
+      okText: '我知道了',
+      hideCancel: true,
+    })
     return
   }
   if (!form.outputName) {
-    alert('请输入文件名')
+    await modals.showConfirm({
+      title: '提示',
+      message: '请输入文件名',
+      okText: '我知道了',
+      hideCancel: true,
+    })
     return
   }
   emit('submit', { ...form })
