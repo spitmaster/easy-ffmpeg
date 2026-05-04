@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import type { ProjectsModalItem } from '@/types/timeline'
+import { useModalsStore } from '@/stores/modals'
 
 /**
  * Project picker modal. Parameterized over data source so single-video
@@ -29,6 +30,8 @@ const emit = defineEmits<{
   (e: 'load', id: string): void
 }>()
 
+const modals = useModalsStore()
+
 const items = ref<ProjectsModalItem[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -55,13 +58,25 @@ function fmtDate(s: string): string {
 }
 
 async function onDelete(p: ProjectsModalItem) {
-  const msg = props.confirmDelete ? props.confirmDelete(p) : `删除工程 "${p.name}"？`
-  if (!confirm(msg)) return
+  const msg = props.confirmDelete ? props.confirmDelete(p) : `删除工程 "${p.name}"?`
+  const ok = await modals.showConfirm({
+    title: '删除工程',
+    message: msg,
+    detail: p.detail,
+    okText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await props.remove(p.id)
     items.value = items.value.filter((x) => x.id !== p.id)
   } catch (e) {
-    alert('删除失败: ' + (e instanceof Error ? e.message : String(e)))
+    await modals.showConfirm({
+      title: '删除失败',
+      message: e instanceof Error ? e.message : String(e),
+      okText: '我知道了',
+      hideCancel: true,
+    })
   }
 }
 

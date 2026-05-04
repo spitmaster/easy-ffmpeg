@@ -7,7 +7,8 @@ import { useMultitrackOps } from '@/composables/useMultitrackOps'
  * Bottom edit toolbar for the multitrack timeline. Mirrors EditorToolbar
  * (split / delete / undo / redo / scope label / zoom) but layered over
  * the multitrack store so the scope label can show "all / video / audio /
- * track:<id>" and the actions hit useMultitrackOps.
+ * track:<id>" and the actions hit useMultitrackOps. Also hosts the
+ * +video / +audio track buttons so creation lives next to the tracks.
  */
 
 const store = useMultitrackStore()
@@ -39,6 +40,16 @@ const zoom = computed({
     store.pxPerSecond = Math.max(PX_MIN, Math.min(PX_MAX, v))
   },
 })
+
+function onAddVideoTrack() {
+  if (!store.project) return
+  store.addVideoTrack()
+}
+
+function onAddAudioTrack() {
+  if (!store.project) return
+  store.addAudioTrack()
+}
 </script>
 
 <template>
@@ -80,5 +91,16 @@ const zoom = computed({
         title="Ctrl+滚轮缩放，滚轮左右滚动"
       />
     </label>
+    <span class="mx-1 h-4 w-px bg-border-base"></span>
+    <button
+      class="rounded border border-border-strong bg-bg-base px-2 py-1 hover:bg-bg-elevated disabled:opacity-40"
+      :disabled="!store.project || store.exportLocked"
+      @click="onAddVideoTrack"
+    >+ 视频轨</button>
+    <button
+      class="rounded border border-border-strong bg-bg-base px-2 py-1 hover:bg-bg-elevated disabled:opacity-40"
+      :disabled="!store.project || store.exportLocked"
+      @click="onAddAudioTrack"
+    >+ 音频轨</button>
   </div>
 </template>

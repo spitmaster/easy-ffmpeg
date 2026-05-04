@@ -109,7 +109,57 @@ Clip { id, sourceId, sourceStart, sourceEnd, programStart }
 
 ## 3. UI 布局
 
-### 3.1 整体结构(低保真)
+### 3.1 整体布局
+
+#### 3.1.1 布局区域(栅格)
+
+按"1 行顶栏 + 15 行剪辑区"的栅格描述区域(注意:这里只是**比例**,项目并未引入 Bootstrap;实现仍走 Tailwind flex,见 [program.md](program.md)):
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Region: TOP-BAR                                       (rows 1, cols 15) │
+│  [新建工程] [工程列表] [关闭工程] ………………………………………………………… [导出]    │
+├──────────────────┬───────────────────────────────────────────────────────┤
+│ Region: LIBRARY  │  Region: PREVIEW                  (rows 2-8, cols 12) │
+│  (rows 2-16,     │  ┌─────────────────────────────────────────────────┐ │
+│   cols 3)        │  │ MultitrackPreview(<video> + 多 <audio>)         │ │
+│                  │  │                                                 │ │
+│  - 素材列表      │  │                                                 │ │
+│  - + 导入        │  └─────────────────────────────────────────────────┘ │
+│  - 每条素材点    │  PlayBar:⏮ ⏸ ▶ ⏭   00:14 / 00:48                   │
+│    "+ 添加"      ├───────────────────────────────────────────────────────┤
+│    建轨         │  Region: TRACKS                   (rows 9-16, cols 12) │
+│                  │  ┌─────────────────────────────────────────────────┐ │
+│                  │  │ TimelineRuler                                   │ │
+│                  │  │ V1 / V2 / … 视频轨                               │ │
+│                  │  │ A1 / A2 / … 音频轨                               │ │
+│                  │  └─────────────────────────────────────────────────┘ │
+│                  │  MultitrackToolbar:[✂分割][🗑删除][↶撤销][↷重做] … │
+└──────────────────┴───────────────────────────────────────────────────────┘
+```
+
+| Region | 行 | 列 | 内容 | 实现位置 |
+|--------|----|----|------|---------|
+| **TOP-BAR** | 1 | 1–15 | 工程生命周期 / 导出入口 | [MultitrackView.vue](../../../web/src/views/MultitrackView.vue) `<!-- Region: TOP-BAR -->` |
+| **LIBRARY** | 2–16 | 1–3 | 素材库栏(可折叠) | [MultitrackLibrary.vue](../../../web/src/components/multitrack/MultitrackLibrary.vue) |
+| **PREVIEW** | 2–8 | 4–15 | 预览区 + PlayBar(剪辑区上半,占 0.5) | [MultitrackPreview.vue](../../../web/src/components/multitrack/MultitrackPreview.vue) + [PlayBar.vue](../../../web/src/components/timeline-shared/PlayBar.vue) |
+| **TRACKS** | 9–16 | 4–15 | 时间轴(标尺 + 多轨) + Toolbar(剪辑区下半,占 0.5) | [MultitrackView.vue](../../../web/src/views/MultitrackView.vue) timeline 容器 + [MultitrackToolbar.vue](../../../web/src/components/multitrack/MultitrackToolbar.vue) |
+
+**TOP-BAR 内排布**:
+
+| 位置 | 控件 | 行为 |
+|------|------|------|
+| 左 | `新建工程` | 弹出名称输入,新建空工程 |
+| 左 | `工程列表` | 弹出工程列表模态 |
+| 左 | `关闭工程`(`v-if="hasProject"`) | flush 保存后关闭 |
+| 右 | `●` 脏标(`v-if="hasProject && dirty"`) | 提示有未保存改动 |
+| 右 | `导出`(`v-if="hasProject"`) | 走 dryRun → 命令预览 → 真实导出 |
+
+**剪辑区内部比例**:LIBRARY : (PREVIEW + TRACKS) = **3 : 12**(20% / 80%);PREVIEW : TRACKS = **0.5 : 0.5**(各占剪辑区竖向一半,内部 PlayBar / Toolbar 取自然高度,挤占归属区域)。
+
+**ExportSidebar**(导出期右栏)是**条件性叠加层**,不在固定栅格内;`exportSidebarOpen` 时从 `Region: TRACKS` 右侧切出一列(沿用单视频导出体验)。
+
+#### 3.1.2 低保真示意图
 
 ```text
 ┌─ 多轨剪辑 Tab ───────────────────────────────────────────────────────────────┐

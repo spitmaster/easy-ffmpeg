@@ -277,6 +277,15 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     undoStack.push()
   }
 
+  function setAudioTrackVolume(trackId: string, volume: number) {
+    if (!project.value) return
+    const clamped = Math.max(0, Math.min(2, volume))
+    const next = project.value.audioTracks.map((t) =>
+      t.id === trackId ? { ...t, volume: clamped } : t,
+    )
+    applyProjectPatch({ audioTracks: next })
+  }
+
   /**
    * Move a clip from one track to another, both of the given kind. Cross-
    * kind moves (video → audio or vice versa) are silently rejected — the
@@ -455,6 +464,7 @@ export const useMultitrackStore = defineStore('multitrack', () => {
     addAudioTrack,
     removeVideoTrack,
     removeAudioTrack,
+    setAudioTrackVolume,
     moveClipAcrossTracks,
     appendClip,
     applyProjectPatch,

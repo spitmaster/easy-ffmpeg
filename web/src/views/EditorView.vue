@@ -20,9 +20,9 @@ import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeS
 import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
 import { totalDuration } from '@/utils/timeline'
 import { Path } from '@/utils/path'
+import { findMissingSources } from '@/utils/validateSources'
 import EditorTopBar from '@/components/editor/EditorTopBar.vue'
 import EditorToolbar from '@/components/editor/EditorToolbar.vue'
-import AudioVolumePopover from '@/components/timeline-shared/AudioVolumePopover.vue'
 import ExportDialog from '@/components/timeline-shared/ExportDialog.vue'
 import ExportSidebar from '@/components/timeline-shared/ExportSidebar.vue'
 import PlayBar from '@/components/timeline-shared/PlayBar.vue'
@@ -30,6 +30,7 @@ import ProjectsModal from '@/components/timeline-shared/ProjectsModal.vue'
 import TimelinePlayhead from '@/components/timeline-shared/TimelinePlayhead.vue'
 import TimelineRangeSelection from '@/components/timeline-shared/TimelineRangeSelection.vue'
 import TimelineRuler from '@/components/timeline-shared/TimelineRuler.vue'
+import TimelineTrackLabel from '@/components/timeline-shared/TimelineTrackLabel.vue'
 import TimelineTrackRow from '@/components/timeline-shared/TimelineTrackRow.vue'
 
 const store = useEditorStore()
@@ -259,6 +260,31 @@ function loadProject(project: Project) {
   // Fit-to-width must run after the workspace is visible so clientWidth
   // reads correctly.
   requestAnimationFrame(() => zoom.applyFit())
+  warnIfSourceMissing()
+}
+
+/**
+ * Probe the source URL with HEAD on project load. The backend returns
+ * 404 when the on-disk file is gone, which otherwise only surfaces as a
+ * silent black preview. Show an explicit warning so the user can restore
+ * or pick a new file before trying to play / export.
+ */
+async function warnIfSourceMissing() {
+  const p = store.project
+  if (!p?.source?.path) return
+  const projectId = p.id
+  const missing = await findMissingSources([
+    { path: p.source.path, url: editorApi.sourceUrl(projectId) },
+  ])
+  if (missing.length === 0 || store.project?.id !== projectId) return
+  await modals.showConfirm({
+    title: '源文件丢失',
+    message:
+      '该工程的源文件已不存在,无法播放/导出。请先恢复文件,或通过顶栏「📂 打开视频」打开新的视频。',
+    detail: missing[0],
+    okText: '我知道了',
+    hideCancel: true,
+  })
 }
 
 // ---- Projects modal adapter ----
@@ -447,18 +473,20 @@ watch(
             @contextmenu="onContextMenu"
           >
             <!-- Left: track labels. Each row's height matches the right-hand
-                 ruler / track heights so the labels stay aligned. -->
-            <div class="flex w-24 shrink-0 flex-col border-r border-border-base bg-bg-panel text-xs">
+                 ruler / track heights so the labels stay aligned. Width is
+                 sized to the audio row's content (label + inline volume
+                 popover button) — same single-line layout multitrack uses,
+                 minus the delete-× since this editor's two tracks are fixed.
+                 Narrower than the multitrack column for that reason. -->
+            <div class="flex w-36 shrink-0 flex-col border-r border-border-base bg-bg-panel text-xs">
               <div class="h-7 shrink-0 border-b border-border-base"></div>
-              <div class="flex h-12 shrink-0 items-center px-2">🎬 视频</div>
-              <!-- Audio row is taller — we stack the label + volume button
-                   vertically, h-12 was too tight. -->
-              <div class="flex h-14 shrink-0 items-center border-t border-border-base px-2 py-1">
-                <span class="flex w-full flex-col items-start gap-1">
-                  <span class="whitespace-nowrap">🔊 音频</span>
-                  <AudioVolumePopover v-model="audioVolume" />
-                </span>
-              </div>
+              <TimelineTrackLabel kind="video" label="视频" />
+              <TimelineTrackLabel
+                kind="audio"
+                label="音频"
+                :volume="audioVolume"
+                @update:volume="audioVolume = $event"
+              />
             </div>
 
             <!-- Right: scrolling area -->
@@ -489,7 +517,7 @@ watch(
                 :px-per-second="store.pxPerSecond"
                 :track-width="trackWidth"
                 :selected-ids="selectedAudioIds"
-                height-class="h-14"
+                height-class="h-12"
                 @mousedown="(payload) => onTrackMouseDown(TRACK_AUDIO, payload)"
               />
 
@@ -514,7 +542,7 @@ watch(
                 v-show="store.project && store.splitScope === TRACK_AUDIO"
                 :x="playheadX"
                 top="76px"
-                height="56px"
+                height="48px"
                 @mousedown="onPlayheadMouseDown"
               />
             </div>

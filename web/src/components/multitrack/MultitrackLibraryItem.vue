@@ -5,15 +5,19 @@ import { Path } from '@/utils/path'
 
 /**
  * One source card in the library: kind icon + name + duration + dimensions.
- * The card is `draggable=true`; the parent doesn't need to know about
- * native drag — we set the `dataTransfer` payload right here.
+ * Click "+ 添加" to append the source as new tracks (video → 1 video + 1
+ * audio if hasAudio; audio → 1 audio). The drag-to-timeline path was
+ * removed because it stacked clips on existing tracks unintuitively.
  */
 const props = defineProps<{
   source: MultitrackSource
+  /** True while a previous add is still in flight or while exporting. */
+  disabled?: boolean
 }>()
 
 defineEmits<{
   (e: 'remove'): void
+  (e: 'add'): void
 }>()
 
 const baseName = computed(() => Path.basename(props.source.path) || props.source.path)
@@ -28,17 +32,6 @@ const durLabel = computed(() => fmtDur(props.source.duration))
 
 const icon = computed(() => (props.source.kind === 'video' ? '🎬' : '🔊'))
 
-function onDragStart(ev: DragEvent) {
-  if (!ev.dataTransfer) return
-  ev.dataTransfer.effectAllowed = 'copy'
-  // Custom mime type so internal drops can identify our payload while
-  // ignoring foreign drags (e.g. files dragged in from the OS shell).
-  ev.dataTransfer.setData(
-    'application/x-easy-ffmpeg-source',
-    JSON.stringify({ sourceId: props.source.id }),
-  )
-}
-
 function fmtDur(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '—'
   const total = Math.round(sec)
@@ -52,10 +45,8 @@ function fmtDur(sec: number): string {
 
 <template>
   <div
-    class="group flex cursor-grab items-start gap-2 rounded border border-border-base bg-bg-base px-2 py-1.5 hover:border-border-strong"
+    class="group flex items-start gap-2 rounded border border-border-base bg-bg-base px-2 py-1.5 hover:border-border-strong"
     :title="source.path"
-    draggable="true"
-    @dragstart="onDragStart"
   >
     <div class="text-base leading-5">{{ icon }}</div>
     <div class="min-w-0 flex-1">
@@ -66,10 +57,18 @@ function fmtDur(sec: number): string {
         <span v-if="source.kind === 'audio'">音频</span>
       </div>
     </div>
-    <button
-      class="invisible shrink-0 rounded px-1 text-[10px] text-fg-muted hover:bg-bg-elevated hover:text-fg-base group-hover:visible"
-      title="从工程移除此素材"
-      @click.stop="$emit('remove')"
-    >×</button>
+    <div class="flex shrink-0 flex-col items-end gap-1">
+      <button
+        class="rounded border border-accent bg-bg-base px-1.5 py-0.5 text-[10px] text-accent hover:bg-accent hover:text-bg-base disabled:cursor-not-allowed disabled:opacity-40"
+        title="添加为新轨道(视频→新建视频轨+音频轨；音频→新建音频轨)"
+        :disabled="props.disabled"
+        @click.stop="$emit('add')"
+      >+ 添加</button>
+      <button
+        class="invisible rounded px-1 text-[10px] text-fg-muted hover:bg-bg-elevated hover:text-fg-base group-hover:visible"
+        title="从工程移除此素材"
+        @click.stop="$emit('remove')"
+      >×</button>
+    </div>
   </div>
 </template>

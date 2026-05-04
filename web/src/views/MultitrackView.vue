@@ -19,6 +19,7 @@ import { useTimelinePlayback } from '@/composables/timeline/useTimelinePlayback'
 import { useTimelineRangeSelect } from '@/composables/timeline/useTimelineRangeSelect'
 import { useTimelineZoom } from '@/composables/timeline/useTimelineZoom'
 import { Path } from '@/utils/path'
+import { findMissingSources } from '@/utils/validateSources'
 import MultitrackLibrary from '@/components/multitrack/MultitrackLibrary.vue'
 import MultitrackPreview from '@/components/multitrack/MultitrackPreview.vue'
 import MultitrackToolbar from '@/components/multitrack/MultitrackToolbar.vue'
@@ -29,24 +30,25 @@ import ProjectsModal from '@/components/timeline-shared/ProjectsModal.vue'
 import TimelinePlayhead from '@/components/timeline-shared/TimelinePlayhead.vue'
 import TimelineRangeSelection from '@/components/timeline-shared/TimelineRangeSelection.vue'
 import TimelineRuler from '@/components/timeline-shared/TimelineRuler.vue'
+import TimelineTrackLabel from '@/components/timeline-shared/TimelineTrackLabel.vue'
 import TimelineTrackRow from '@/components/timeline-shared/TimelineTrackRow.vue'
 
 /**
- * Multitrack editor view — M7.
+ * Multitrack editor view.
  *
  * Layout:
- *   topbar (project actions + add-track buttons + undo/redo + library toggle)
- *   library | preview / playbar / timeline (video tracks ↑, audio tracks ↓)
+ *   topbar (project actions + dirty indicator + export)
+ *   library | preview / playbar / timeline | export sidebar
+ *   bottom toolbar (split / delete / undo / redo / scope / zoom / +track)
  *
- * Drag/drop:
- *   - Library item dragged out carries `application/x-easy-ffmpeg-source`
- *     with `{ sourceId }`.
- *   - Drop on the timeline area: video source → +video track + +audio track
- *     (when hasAudio); audio source → +audio track. Existing track of the
- *     right kind also accepts a drop, appending the clip at the playhead.
- *   - Cross-track clip drag (V→V / A→A) is wired through useTimelineDrag's
- *     findTargetTrack / onCrossTrack callbacks; V→A and A→V drops are
- *     rejected at findTargetTrack time so onCrossTrack never fires.
+ * Source → tracks:
+ *   - The library card's "+ 添加" button calls onAddSource(): video source
+ *     creates 1 video track + 1 audio track (when hasAudio); audio source
+ *     creates 1 audio track. Drag-from-library was removed because it
+ *     stacked clips on existing tracks unintuitively.
+ *   - Cross-track clip drag (V→V / A→A) is still wired through
+ *     useTimelineDrag's findTargetTrack / onCrossTrack callbacks; V→A and
+ *     A→V moves are rejected at findTargetTrack time.
  */
 
 const store = useMultitrackStore()
@@ -77,25 +79,25 @@ const previewRef = useTemplateRef<{ play: () => void; pause: () => void; toggle:
 const scrollEl = useTemplateRef<HTMLDivElement>('scrollEl')
 const rulerScrollEl = useTemplateRef<HTMLDivElement>('rulerScrollEl')
 const labelsEl = useTemplateRef<HTMLDivElement>('labelsEl')
-const bodyEl = useTemplateRef<HTMLDivElement>('bodyEl')
 const rulerCmp = useTemplateRef<{ rootEl: HTMLDivElement | null }>('rulerCmp')
 
 /**
- * X-scroll sync: only `scrollEl` shows a horizontal scrollbar; the ruler
- * container at the top mirrors it so ruler and tracks stay aligned at any
- * scrollLeft. The label column is overflow-hidden — it inherits Y from the
- * body Y-scroll container, no X scroll there.
+ * scrollEl owns BOTH X and Y scroll so the scrollbars stay anchored at
+ * the bottom-right of the visible tracks area (rather than at the bottom
+ * of the full content stack, which goes off-screen as more tracks are
+ * added). On scroll we mirror:
+ *   - X → ruler.scrollLeft (top time-axis stays aligned with tracks)
+ *   - Y → labels.scrollTop  (left label column scrolls with the tracks)
+ * labels keeps overflow-hidden (no scrollbar visible) and is moved
+ * programmatically; ruler the same.
  */
 function onTracksScroll() {
   const s = scrollEl.value
+  if (!s) return
   const r = rulerScrollEl.value
-  if (s && r && r.scrollLeft !== s.scrollLeft) r.scrollLeft = s.scrollLeft
-}
-/** Body Y-scroll: keep label column's scrollTop aligned with tracks. */
-function onBodyScroll() {
-  const b = bodyEl.value
+  if (r && r.scrollLeft !== s.scrollLeft) r.scrollLeft = s.scrollLeft
   const l = labelsEl.value
-  if (b && l && l.scrollTop !== b.scrollTop) l.scrollTop = b.scrollTop
+  if (l && l.scrollTop !== s.scrollTop) l.scrollTop = s.scrollTop
 }
 
 const hasProject = computed(() => !!store.project)
@@ -460,54 +462,23 @@ async function onRemoveSource(sourceId: string) {
   }
 }
 
-// ---- Add / remove tracks ----
-
-function onAddVideoTrack() {
-  if (!store.project) return
-  store.addVideoTrack()
-}
-
-function onAddAudioTrack() {
-  if (!store.project) return
-  store.addAudioTrack()
-}
+// ---- Track removal ----
 
 function onRemoveTrack(kind: 'video' | 'audio', id: string) {
   ops.removeTrack(kind, id)
 }
 
-// ---- Drag/drop from library ----
+// ---- Per-audio-track volume ----
 
-const SOURCE_MIME = 'application/x-easy-ffmpeg-source'
-
-function readSourcePayload(ev: DragEvent): { sourceId: string } | null {
-  const raw = ev.dataTransfer?.getData(SOURCE_MIME)
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw)
-    if (typeof parsed?.sourceId === 'string' && parsed.sourceId) return { sourceId: parsed.sourceId }
-  } catch {
-    return null
-  }
-  return null
+function onSetTrackVolume(trackId: string, v: number) {
+  if (!Number.isFinite(v)) return
+  store.setAudioTrackVolume(trackId, v)
 }
+
+// ---- Library "+ 添加" → create new tracks for this source ----
 
 function findSource(sid: string): MultitrackSource | null {
   return store.project?.sources.find((s) => s.id === sid) ?? null
-}
-
-function onTimelineDragOver(ev: DragEvent) {
-  if (!ev.dataTransfer) return
-  if (store.exportLocked) {
-    // Refuse drops outright while exporting — preventDefault is what tells
-    // the browser the target accepts the drop, so by skipping it the
-    // dragend reverts the source-card animation.
-    return
-  }
-  if (Array.from(ev.dataTransfer.types).includes(SOURCE_MIME)) {
-    ev.preventDefault()
-    ev.dataTransfer.dropEffect = 'copy'
-  }
 }
 
 function newClipID(): string {
@@ -525,16 +496,13 @@ function makeClip(src: MultitrackSource, programStart: number): MultitrackClip {
 }
 
 /**
- * Drop onto blank timeline space → auto-create the right tracks.
- * Video source → 1 video track + 1 audio track if it has audio.
- * Audio source → 1 audio track.
+ * Click "+ 添加" on a library card → always create new tracks holding
+ * the full clip. Video source → 1 video track + 1 audio track (when
+ * hasAudio); audio source → 1 audio track. Clips start at program time 0.
  */
-function onTimelineDropEmpty(ev: DragEvent) {
-  ev.preventDefault()
+function onAddSource(sourceId: string) {
   if (!store.project || store.exportLocked) return
-  const payload = readSourcePayload(ev)
-  if (!payload) return
-  const src = findSource(payload.sourceId)
+  const src = findSource(sourceId)
   if (!src) return
   if (src.kind === SOURCE_VIDEO) {
     const vid = store.addVideoTrack()
@@ -547,18 +515,6 @@ function onTimelineDropEmpty(ev: DragEvent) {
     const aid = store.addAudioTrack()
     store.appendClip('audio', aid, makeClip(src, 0))
   }
-}
-
-/** Drop onto a specific track row → append the clip at the playhead. */
-function onTrackDrop(ev: DragEvent, kind: 'video' | 'audio', trackId: string) {
-  ev.preventDefault()
-  if (!store.project || store.exportLocked) return
-  const payload = readSourcePayload(ev)
-  if (!payload) return
-  const src = findSource(payload.sourceId)
-  if (!src) return
-  if (kind === 'video' && src.kind !== SOURCE_VIDEO) return
-  store.appendClip(kind, trackId, makeClip(src, store.playhead))
 }
 
 // ---- Export ----
@@ -720,14 +676,48 @@ watch(
   () => {
     if (!store.project) return
     requestAnimationFrame(() => zoom.applyFit())
+    warnIfSourcesMissing()
   },
 )
+
+/**
+ * Probe each source URL with HEAD on project open. The backend returns
+ * 404 when the on-disk file is gone, which otherwise only surfaces as a
+ * silent black preview. Showing the list lets the user restore / re-link
+ * the files before trying to play or export.
+ */
+async function warnIfSourcesMissing() {
+  const p = store.project
+  if (!p || p.sources.length === 0) return
+  const projectId = p.id
+  const missing = await findMissingSources(
+    p.sources.map((s) => ({
+      path: s.path,
+      url: multitrackApi.sourceUrl(projectId, s.id),
+    })),
+  )
+  // Bail if the user closed / switched projects while HEAD was in flight.
+  if (missing.length === 0 || store.project?.id !== projectId) return
+  await modals.showConfirm({
+    title: '部分源文件丢失',
+    message:
+      '该工程引用的以下源文件已不存在,无法播放/导出。请先恢复文件,或在素材库中将其移除后重新导入。',
+    detail: missing.join('\n'),
+    okText: '我知道了',
+    hideCancel: true,
+  })
+}
 
 </script>
 
 <template>
   <section class="flex h-full flex-col">
-    <!-- Top bar: project actions + add-track buttons + undo/redo + library toggle -->
+    <!-- ============================================================
+         Region: TOP-BAR  (1 row × full width)
+         Left:  新建工程 / 工程列表 / 关闭工程
+         Right: 脏标 / 导出
+         Spec:  docs/tabs/multitrack/product.md §3.1.1
+         ============================================================ -->
     <div class="flex shrink-0 items-center gap-2 border-b border-border-base bg-bg-panel px-4 py-2 text-sm">
       <button
         class="rounded border border-border-strong px-3 py-1 hover:bg-bg-elevated"
@@ -737,41 +727,25 @@ watch(
         class="rounded border border-border-strong px-3 py-1 hover:bg-bg-elevated"
         @click="projectsOpen = true"
       >工程列表</button>
-      <template v-if="hasProject">
-        <span class="mx-2 h-4 w-px bg-border-base"></span>
+      <button
+        v-if="hasProject"
+        class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-bg-elevated hover:text-fg-base disabled:opacity-50"
+        :disabled="store.exportLocked"
+        @click="onClose"
+      >关闭工程</button>
+      <div v-if="!hasProject" class="ml-2 truncate text-xs text-fg-muted">暂无打开的工程</div>
+      <div class="ml-auto flex items-center gap-2">
+        <span
+          v-if="hasProject && store.dirty"
+          class="text-xs text-warning"
+          title="有未保存的改动"
+        >●</span>
         <button
-          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated disabled:opacity-50"
-          :disabled="store.exportLocked"
-          @click="onAddVideoTrack"
-        >+ 视频轨</button>
-        <button
-          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated disabled:opacity-50"
-          :disabled="store.exportLocked"
-          @click="onAddAudioTrack"
-        >+ 音频轨</button>
-        <span class="mx-2 h-4 w-px bg-border-base"></span>
-        <button
-          class="rounded border border-border-strong px-2 py-1 text-xs hover:bg-bg-elevated"
-          title="折叠/展开素材库 (Ctrl+L)"
-          @click="store.libraryCollapsed = !store.libraryCollapsed"
-        >{{ store.libraryCollapsed ? '展开素材库' : '收起素材库' }}</button>
-        <button
+          v-if="hasProject"
           class="rounded bg-accent px-3 py-1 text-xs text-bg-base hover:bg-accent-hover disabled:opacity-50"
           :disabled="exportDisabled"
           @click="exportOpen = true"
         >导出</button>
-        <button
-          class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-bg-elevated hover:text-fg-base disabled:opacity-50"
-          :disabled="store.exportLocked"
-          @click="onClose"
-        >关闭工程</button>
-      </template>
-      <div class="ml-auto truncate text-xs text-fg-muted">
-        <template v-if="hasProject">
-          当前:<span class="text-fg-base">{{ store.project!.name }}</span>
-          <span v-if="store.dirty" class="ml-2 text-warning">●</span>
-        </template>
-        <template v-else>暂无打开的工程</template>
       </div>
     </div>
 
@@ -785,14 +759,33 @@ watch(
       </div>
     </div>
 
+    <!-- ============================================================
+         Body grid (15 rows × 15 cols, see product.md §3.1.1):
+           Region: LIBRARY  (cols  1– 3, full body height)
+           Region: PREVIEW  (cols  4–15, top    half — 0.5)
+           Region: TRACKS   (cols  4–15, bottom half — 0.5)
+         Implementation note:
+           - The grid is descriptive, not enforced via CSS Grid; the layout
+             below uses flex with proportional basis (3 : 12 = 20% : 80%)
+             for LIBRARY vs PREVIEW+TRACKS, and flex-1 inside each of
+             PREVIEW / TRACKS for the 0.5 / 0.5 split.
+           - PlayBar lives inside PREVIEW (controls the preview), Toolbar
+             inside TRACKS (operates on tracks); both take natural height
+             and eat into their own region — they do not break the 0.5
+             split between regions.
+         ============================================================ -->
     <div v-else class="flex flex-1 overflow-hidden">
+      <!-- Region: LIBRARY (cols 1–3 ≈ 20%) -->
       <MultitrackLibrary
         v-if="!store.libraryCollapsed"
         ref="libraryRef"
         :sources="store.project!.sources"
         :importing="importing"
+        :add-disabled="store.exportLocked"
         @import="onImport"
         @remove="onRemoveSource"
+        @add="onAddSource"
+        @collapse="store.libraryCollapsed = true"
       />
       <div
         v-else
@@ -805,7 +798,10 @@ watch(
         >»</button>
       </div>
 
+      <!-- Editor column (cols 4–15 ≈ 80%): split 0.5 / 0.5 vertically. -->
       <div class="flex flex-1 flex-col overflow-hidden">
+        <!-- Region: PREVIEW (top 0.5) — preview pane + PlayBar -->
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <MultitrackPreview ref="previewRef" />
 
         <PlayBar
@@ -816,20 +812,24 @@ watch(
           @next="seekToNearestBoundary(1)"
           @toggle="previewRef?.toggle()"
         />
+        </div>
+        <!-- /Region: PREVIEW -->
 
+        <!-- Region: TRACKS (bottom 0.5) — timeline area + Toolbar -->
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <!-- Timeline area: ruler row (fixed at top) + body (Y-scroll
-             label column + X-scroll tracks). -->
+             label column + X-scroll tracks). flex-1 + min-h so the area
+             grows with available vertical space — fixed h-64 used to push
+             extra tracks off screen when the project had many of them. -->
         <div
-          class="relative flex h-64 shrink-0 flex-col overflow-hidden border-t border-border-base bg-bg-base"
+          class="relative flex min-h-[12rem] flex-1 flex-col overflow-hidden border-t border-border-base bg-bg-base"
           @contextmenu="onContextMenu"
-          @dragover="onTimelineDragOver"
-          @drop="onTimelineDropEmpty"
         >
           <!-- Header row: corner + ruler. The ruler container's X-scroll is
                kept in sync with the tracks via onTracksScroll, so this row
                always shows the same time range as what's below. -->
           <div class="flex shrink-0">
-            <div class="h-7 w-28 shrink-0 border-b border-r border-border-base bg-bg-panel"></div>
+            <div class="h-7 w-40 shrink-0 border-b border-r border-border-base bg-bg-panel"></div>
             <div
               ref="rulerScrollEl"
               class="relative flex-1 overflow-hidden"
@@ -854,142 +854,161 @@ watch(
             </div>
           </div>
 
-          <!-- Body: shared Y-scroll for labels + tracks. The labels column
-               itself is overflow-hidden, scrollTop synced from the body. -->
-          <div ref="bodyEl" class="flex flex-1 overflow-y-auto overflow-x-hidden" @scroll="onBodyScroll">
+          <!-- Body: pure flex-row container (labels | scrollEl). No scroll
+               here — scrollEl owns BOTH X and Y so its scrollbars stay
+               anchored at the bottom-right of the visible tracks area
+               instead of riding the content off-screen. labels stretches
+               to body height via default align-items:stretch, content
+               inside is clipped by overflow-hidden and moved
+               programmatically via onTracksScroll → labels.scrollTop. -->
+          <div class="flex min-h-0 flex-1 overflow-hidden">
             <!-- Labels column. Inner div lets content grow taller than the
-                 visible column so it scrolls with the body. -->
+                 visible column so it scrolls with the body. Audio rows put
+                 the volume popover button inline next to the label so all
+                 controls (label + 音量:NNN% button + delete-×) fit on a
+                 single h-12 line. Width is sized to the audio row's
+                 content; the label has min-w-0 + truncate so double-digit
+                 track indices ("音频 10+") elide gracefully. -->
             <div
               ref="labelsEl"
-              class="w-28 shrink-0 overflow-hidden border-r border-border-base bg-bg-panel text-xs"
+              class="w-40 shrink-0 overflow-hidden border-r border-border-base bg-bg-panel text-xs"
             >
               <div class="flex flex-col">
-                <div
+                <TimelineTrackLabel
                   v-for="t in videoTracksData"
                   :key="'lv-' + t.id"
-                  class="group flex h-12 shrink-0 items-center gap-1 border-b border-border-base px-2"
-                >
-                  <span class="truncate">🎬 {{ t.label }}</span>
-                  <button
-                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger disabled:cursor-not-allowed group-hover:opacity-100"
-                    title="删除该轨道"
-                    :disabled="store.exportLocked"
-                    @click.stop="onRemoveTrack('video', t.id)"
-                  >×</button>
-                </div>
-                <div
+                  kind="video"
+                  :label="t.label ?? ''"
+                  removable
+                  :disabled="store.exportLocked"
+                  @remove="onRemoveTrack('video', t.id)"
+                />
+                <TimelineTrackLabel
                   v-for="t in audioTracksData"
                   :key="'la-' + t.id"
-                  class="group flex h-12 shrink-0 items-center gap-1 border-b border-border-base px-2"
-                >
-                  <span class="truncate">🔊 {{ t.label }}</span>
-                  <button
-                    class="ml-auto rounded px-1 text-fg-muted opacity-0 hover:bg-bg-elevated hover:text-danger disabled:cursor-not-allowed group-hover:opacity-100"
-                    title="删除该轨道"
-                    :disabled="store.exportLocked"
-                    @click.stop="onRemoveTrack('audio', t.id)"
-                  >×</button>
-                </div>
+                  kind="audio"
+                  :label="t.label ?? ''"
+                  :volume="t.volume ?? 1"
+                  removable
+                  :disabled="store.exportLocked"
+                  @update:volume="(v: number) => onSetTrackVolume(t.id, v)"
+                  @remove="onRemoveTrack('audio', t.id)"
+                />
                 <div v-if="videoTracksData.length + audioTracksData.length === 0" class="px-2 py-3 text-[11px] text-fg-muted">
-                  拖入素材即建轨
+                  从素材库点"+ 添加"建轨
                 </div>
               </div>
             </div>
 
-            <!-- Tracks: X-scroll only. Y-scroll is owned by the parent body. -->
+            <!-- Tracks: owns BOTH X and Y scroll so the X scrollbar stays
+                 fixed at the bottom of the visible tracks frame instead
+                 of being pushed off-screen by tall content. onTracksScroll
+                 mirrors X→ruler and Y→labels.
+
+                 The inner wrapper is the `position: relative` containing
+                 block for the absolute overlays (range selection,
+                 playheads). It sizes to natural content height (sum of
+                 track rows) — using `relative` directly on scrollEl makes
+                 absolute children resolve `bottom: 0` against the viewport
+                 (clientHeight), so range selection and the full-height
+                 playhead would only cover the visible part of the tracks
+                 and not the rows scrolled below. minHeight: 100% keeps the
+                 empty-state placeholder visible when there are no tracks. -->
             <div
               ref="scrollEl"
-              class="relative flex-1 overflow-x-auto overflow-y-hidden"
+              class="flex-1 overflow-auto"
               @wheel="zoom.onWheel"
               @scroll="onTracksScroll"
             >
               <div
-                v-for="t in videoTracksData"
-                :key="'v-' + t.id"
-                :data-mt-track-id="t.id"
-                data-mt-track-kind="video"
+                class="relative"
+                :style="{ width: trackWidth + 'px', minHeight: '100%' }"
               >
-                <TimelineTrackRow
-                  :track="t"
+                <div
+                  v-for="t in videoTracksData"
+                  :key="'v-' + t.id"
+                  :data-mt-track-id="t.id"
+                  data-mt-track-kind="video"
+                >
+                  <TimelineTrackRow
+                    :track="t"
+                    :px-per-second="store.pxPerSecond"
+                    :track-width="trackWidth"
+                    :selected-ids="selectedIdsForTrack(t.id)"
+                    height-class="h-12"
+                    @mousedown="(payload) => onTrackMouseDown(t.id, 'video', payload)"
+                  />
+                </div>
+
+                <div
+                  v-for="t in audioTracksData"
+                  :key="'a-' + t.id"
+                  :data-mt-track-id="t.id"
+                  data-mt-track-kind="audio"
+                >
+                  <TimelineTrackRow
+                    :track="t"
+                    :px-per-second="store.pxPerSecond"
+                    :track-width="trackWidth"
+                    :selected-ids="selectedIdsForTrack(t.id)"
+                    height-class="h-12"
+                    top-border
+                    @mousedown="(payload) => onTrackMouseDown(t.id, 'audio', payload)"
+                  />
+                </div>
+
+                <div
+                  v-if="videoTracksData.length + audioTracksData.length === 0"
+                  class="absolute inset-0 flex items-center justify-center text-[11px] text-fg-muted"
+                >从左侧素材库点"+ 添加"开始建轨</div>
+
+                <TimelineRangeSelection
+                  :range="store.rangeSelection"
                   :px-per-second="store.pxPerSecond"
-                  :track-width="trackWidth"
-                  :selected-ids="selectedIdsForTrack(t.id)"
-                  height-class="h-12"
-                  @mousedown="(payload) => onTrackMouseDown(t.id, 'video', payload)"
-                  @dragover="onTimelineDragOver"
-                  @drop.stop="(ev: DragEvent) => onTrackDrop(ev, 'video', t.id)"
+                />
+
+                <!-- Playheads inside the body cover the tracks. Heights are
+                     computed inline so they align to the row stack regardless
+                     of the body Y-scroll position (top is in tracks-content
+                     coordinates). -->
+                <TimelinePlayhead
+                  v-show="showPlayheadAll && store.project && total > 0"
+                  :x="playheadX"
+                  top="0"
+                  @mousedown="onPlayheadMouseDown"
+                />
+                <TimelinePlayhead
+                  v-show="showPlayheadVideo && store.project && total > 0 && videoTracksData.length > 0"
+                  :x="playheadX"
+                  top="0"
+                  :height="(videoTracksData.length * ROW_PX) + 'px'"
+                  @mousedown="onPlayheadMouseDown"
+                />
+                <TimelinePlayhead
+                  v-show="showPlayheadAudio && store.project && total > 0 && audioTracksData.length > 0"
+                  :x="playheadX"
+                  :top="(videoTracksData.length * ROW_PX) + 'px'"
+                  :height="(audioTracksData.length * ROW_PX) + 'px'"
+                  @mousedown="onPlayheadMouseDown"
+                />
+                <TimelinePlayhead
+                  v-if="singleTrackScopeBodyTop !== null"
+                  v-show="store.project && total > 0"
+                  :x="playheadX"
+                  :top="singleTrackScopeBodyTop + 'px'"
+                  :height="ROW_PX + 'px'"
+                  @mousedown="onPlayheadMouseDown"
                 />
               </div>
-
-              <div
-                v-for="t in audioTracksData"
-                :key="'a-' + t.id"
-                :data-mt-track-id="t.id"
-                data-mt-track-kind="audio"
-              >
-                <TimelineTrackRow
-                  :track="t"
-                  :px-per-second="store.pxPerSecond"
-                  :track-width="trackWidth"
-                  :selected-ids="selectedIdsForTrack(t.id)"
-                  height-class="h-12"
-                  top-border
-                  @mousedown="(payload) => onTrackMouseDown(t.id, 'audio', payload)"
-                  @dragover="onTimelineDragOver"
-                  @drop.stop="(ev: DragEvent) => onTrackDrop(ev, 'audio', t.id)"
-                />
-              </div>
-
-              <!-- Empty-timeline drop hint inside the scroll area so the
-                   dragover hit-test always lands on something useful. -->
-              <div
-                v-if="videoTracksData.length + audioTracksData.length === 0"
-                class="absolute inset-0 flex items-center justify-center text-[11px] text-fg-muted"
-              >拖入素材到此处自动建轨</div>
-
-              <TimelineRangeSelection
-                :range="store.rangeSelection"
-                :px-per-second="store.pxPerSecond"
-              />
-
-              <!-- Playheads inside the body cover the tracks. Heights are
-                   computed inline so they align to the row stack regardless
-                   of the body Y-scroll position (top is in tracks-content
-                   coordinates). -->
-              <TimelinePlayhead
-                v-show="showPlayheadAll && store.project && total > 0"
-                :x="playheadX"
-                top="0"
-                @mousedown="onPlayheadMouseDown"
-              />
-              <TimelinePlayhead
-                v-show="showPlayheadVideo && store.project && total > 0 && videoTracksData.length > 0"
-                :x="playheadX"
-                top="0"
-                :height="(videoTracksData.length * ROW_PX) + 'px'"
-                @mousedown="onPlayheadMouseDown"
-              />
-              <TimelinePlayhead
-                v-show="showPlayheadAudio && store.project && total > 0 && audioTracksData.length > 0"
-                :x="playheadX"
-                :top="(videoTracksData.length * ROW_PX) + 'px'"
-                :height="(audioTracksData.length * ROW_PX) + 'px'"
-                @mousedown="onPlayheadMouseDown"
-              />
-              <TimelinePlayhead
-                v-if="singleTrackScopeBodyTop !== null"
-                v-show="store.project && total > 0"
-                :x="playheadX"
-                :top="singleTrackScopeBodyTop + 'px'"
-                :height="ROW_PX + 'px'"
-                @mousedown="onPlayheadMouseDown"
-              />
             </div>
           </div>
         </div>
 
         <MultitrackToolbar />
+        </div>
+        <!-- /Region: TRACKS -->
       </div>
+      <!-- /Editor column -->
 
       <!-- Right: export log sidebar (visible only during/after export). The
            ExportSidebar component lays itself out as an inset column —

@@ -1,13 +1,16 @@
 import type { Ref } from 'vue'
 
 /**
- * Zoom and horizontal-scroll handling for a timeline. The composable owns
- * neither the px-per-second value nor the total duration — both are passed
- * by reference so single-video and multitrack share the same wheel/fit
- * semantics over their own state.
+ * Zoom and scroll handling for a timeline. The composable owns neither the
+ * px-per-second value nor the total duration — both are passed by reference
+ * so single-video and multitrack share the same wheel/fit semantics over
+ * their own state.
  *
  *   onWheel — Ctrl/Cmd + wheel zooms around the cursor (cursor stays put);
- *             plain vertical wheel scrolls the timeline horizontally.
+ *             Shift + wheel scrolls horizontally (NLE convention);
+ *             plain wheel falls through to native vertical scroll, which is
+ *             meaningful on multitrack (many tracks) and a no-op on the
+ *             single-video editor (only 2 tracks, overflow-y hidden).
  *   applyFit — fit the entire program duration into the viewport width;
  *             clamps to [pxMin, pxMax].
  */
@@ -54,10 +57,11 @@ export function useTimelineZoom(opts: TimelineZoomOptions) {
       // Keep the time under the cursor stationary on screen.
       const newAnchorX = anchorTime * next
       scroll.scrollLeft = newAnchorX - (ev.clientX - rect.left)
-    } else if (ev.deltaY !== 0 && ev.deltaX === 0) {
+    } else if (ev.shiftKey && ev.deltaY !== 0) {
       ev.preventDefault()
       scroll.scrollLeft += ev.deltaY
     }
+    // No modifier → fall through to native scroll (vertical for multitrack).
   }
 
   return { applyFit, onWheel }

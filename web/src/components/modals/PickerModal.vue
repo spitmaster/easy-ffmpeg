@@ -56,14 +56,35 @@ function onEntryDblClick(e: FsEntry) {
   }
 }
 
+/**
+ * Parent of a slash-separated path. Returns the input itself when already
+ * at a root, so callers can detect "can't go higher" via `parent === p`.
+ *
+ *   "E:/foo/bar" → "E:/foo"
+ *   "E:/foo"     → "E:/"        (NOT "E:" — backend would Stat the drive's
+ *                                 cwd, which on Windows is process-dependent
+ *                                 and produces nonsense paths like "E:g")
+ *   "E:/"        → "E:/"        (drive root — stop)
+ *   "/foo/bar"   → "/foo"
+ *   "/foo"       → "/"
+ *   "/"          → "/"
+ */
+function parentPath(p: string): string {
+  if (!p) return ''
+  const idx = p.lastIndexOf('/')
+  if (idx < 0) return p
+  if (idx === 0) return '/'
+  // Windows drive root form "X:/..." — going up from "X:/foo" must keep
+  // the slash, and "X:/" itself has no parent.
+  if (idx === 2 && p[1] === ':') return p.slice(0, 3)
+  return p.slice(0, idx)
+}
+
 function goUp() {
   const cur = currentPath.value
   if (!cur) return
-  const idx = cur.lastIndexOf('/')
-  // Windows roots like "C:/" need special handling: lastIndexOf is at idx=2,
-  // slice(0, 2) gives "C:" without the slash. Match legacy: keep the
-  // 3-char drive root (e.g. "C:/") so we don't confuse the backend.
-  const parent = idx > 0 ? cur.slice(0, idx) : cur.length > 3 ? cur.slice(0, 3) : cur
+  const parent = parentPath(cur)
+  if (parent === cur) return
   loadPath(parent)
 }
 
@@ -93,21 +114,44 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+/**
+ * Walk a missing startPath up to the first ancestor that actually exists.
+ * The saved "last input directory" survives across sessions, so by the
+ * time we reopen the picker the user may have moved/deleted that folder
+ * — without a fallback, the modal would render only an error and the
+ * user couldn't even switch drives. Last resorts: home, then empty
+ * (backend defaults to home).
+ */
+async function loadStartPath(start: string) {
+  if (!start) {
+    await loadPath('')
+    return
+  }
+  let cur = start
+  for (let i = 0; i < 16; i++) {
+    await loadPath(cur)
+    if (!errorMsg.value) return
+    const next = parentPath(cur)
+    if (next === cur) break
+    cur = next
+  }
+  try {
+    const h = (await fsApi.home()).home
+    await loadPath(h)
+    if (!errorMsg.value) return
+  } catch {
+    /* fall through */
+  }
+  await loadPath('')
+}
+
 watch(
   () => modals.picker,
   async (req) => {
     if (!req) return
     selected.value = null
     hint.value = req.mode === 'file' ? '选中一个文件后点击确认' : ''
-    let start = req.startPath || ''
-    if (!start) {
-      try {
-        start = (await fsApi.home()).home
-      } catch {
-        /* fall through with empty path; backend chooses default */
-      }
-    }
-    await loadPath(start)
+    await loadStartPath(req.startPath || '')
   },
 )
 

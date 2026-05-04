@@ -1,0 +1,53 @@
+<script setup lang="ts">
+import AudioVolumePopover from './AudioVolumePopover.vue'
+
+/**
+ * One left-column label cell for a timeline track row. Renders icon +
+ * label + (audio only) volume popover + optional delete-× button on a
+ * single horizontal line. Shared between the single-video editor (1 video
+ * + 1 audio, !removable) and the multitrack editor (N video + M audio,
+ * removable) so the two views' track UIs stay row-for-row identical.
+ *
+ * Sibling on the right is `TimelineTrackRow` — match `heightClass` between
+ * the two so labels line up with their lanes.
+ */
+defineProps<{
+  kind: 'video' | 'audio'
+  label: string
+  /** Audio-only: current volume (0–2). Omit for video rows. */
+  volume?: number
+  /** Show trailing delete-× button. Default false. */
+  removable?: boolean
+  /** Disable interactive elements (e.g. while exporting). */
+  disabled?: boolean
+  /** Tailwind height utility. Default 'h-12' (matches default TimelineTrackRow height). */
+  heightClass?: string
+}>()
+
+defineEmits<{
+  (e: 'update:volume', v: number): void
+  (e: 'remove'): void
+}>()
+</script>
+
+<template>
+  <div
+    class="flex shrink-0 items-center gap-1 border-b border-border-base px-2"
+    :class="heightClass ?? 'h-12'"
+  >
+    <span class="min-w-0 truncate">{{ kind === 'video' ? '🎬' : '🔊' }} {{ label }}</span>
+    <div v-if="kind === 'audio' && volume !== undefined" class="shrink-0">
+      <AudioVolumePopover
+        :model-value="volume"
+        @update:model-value="(v: number) => $emit('update:volume', v)"
+      />
+    </div>
+    <button
+      v-if="removable"
+      class="shrink-0 rounded px-1 text-fg-muted hover:bg-bg-elevated hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+      title="删除该轨道"
+      :disabled="disabled"
+      @click.stop="$emit('remove')"
+    >×</button>
+  </div>
+</template>

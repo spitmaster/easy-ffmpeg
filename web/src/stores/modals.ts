@@ -2,15 +2,16 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 /**
- * Centralised modal state for the three globally-shared dialogs:
+ * Centralised modal state for the globally-shared dialogs:
  *   - command preview (with copy)
  *   - overwrite confirm
  *   - file/dir picker
+ *   - generic confirm (replaces window.confirm() — Wails WebView2 silently
+ *     suppresses native dialogs and the styling is jarring on Web too)
  *
  * Modal components mount once at the App root and watch this store; views
  * trigger them through the imperative `show*` functions below, which
- * resolve to the user's choice. This mirrors the legacy `Confirm.command`
- * / `Confirm.overwrite` / `Picker.open` Promise-returning APIs.
+ * resolve to the user's choice.
  */
 
 type Resolver<T> = (v: T) => void
@@ -22,7 +23,7 @@ interface PickerRequest {
   resolve: Resolver<string | null>
 }
 
-interface ConfirmRequest {
+interface OverwriteRequest {
   resolve: Resolver<boolean>
 }
 
@@ -31,10 +32,29 @@ interface CommandRequest {
   resolve: Resolver<boolean>
 }
 
+export interface ConfirmOptions {
+  title: string
+  message: string
+  /** Optional secondary detail rendered as monospace block (e.g. id, path). */
+  detail?: string
+  okText?: string
+  cancelText?: string
+  /** Style the OK button as danger (red); default false (accent / blue). */
+  danger?: boolean
+  /** Hide the cancel button (info-only dialog with a single OK). ESC and
+   *  backdrop click still dismiss; the resolved value is irrelevant. */
+  hideCancel?: boolean
+}
+
+interface ConfirmRequest extends ConfirmOptions {
+  resolve: Resolver<boolean>
+}
+
 export const useModalsStore = defineStore('modals', () => {
-  const overwrite = ref<{ path: string; req: ConfirmRequest } | null>(null)
+  const overwrite = ref<{ path: string; req: OverwriteRequest } | null>(null)
   const command = ref<CommandRequest | null>(null)
   const picker = ref<PickerRequest | null>(null)
+  const confirm = ref<ConfirmRequest | null>(null)
 
   function showOverwrite(path: string): Promise<boolean> {
     return new Promise((resolve) => {
@@ -51,6 +71,12 @@ export const useModalsStore = defineStore('modals', () => {
   function showPicker(req: Omit<PickerRequest, 'resolve'>): Promise<string | null> {
     return new Promise((resolve) => {
       picker.value = { ...req, resolve }
+    })
+  }
+
+  function showConfirm(opts: ConfirmOptions): Promise<boolean> {
+    return new Promise((resolve) => {
+      confirm.value = { ...opts, resolve }
     })
   }
 
@@ -75,15 +101,25 @@ export const useModalsStore = defineStore('modals', () => {
     r(v)
   }
 
+  function settleConfirm(v: boolean) {
+    if (!confirm.value) return
+    const r = confirm.value.resolve
+    confirm.value = null
+    r(v)
+  }
+
   return {
     overwrite,
     command,
     picker,
+    confirm,
     showOverwrite,
     showCommand,
     showPicker,
+    showConfirm,
     settleOverwrite,
     settleCommand,
     settlePicker,
+    settleConfirm,
   }
 })

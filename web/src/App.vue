@@ -5,6 +5,7 @@ import TopBar from './components/layout/TopBar.vue'
 import TabNav from './components/layout/TabNav.vue'
 import ConfirmOverwriteModal from './components/modals/ConfirmOverwriteModal.vue'
 import ConfirmCommandModal from './components/modals/ConfirmCommandModal.vue'
+import ConfirmModal from './components/modals/ConfirmModal.vue'
 import PickerModal from './components/modals/PickerModal.vue'
 import PrepareOverlay from './components/modals/PrepareOverlay.vue'
 import { jobBus } from './api/jobs'
@@ -51,4 +52,5 @@ onMounted(async () => {
   <PickerModal />
   <ConfirmCommandModal />
   <ConfirmOverwriteModal />
+  <ConfirmModal />
 </template>

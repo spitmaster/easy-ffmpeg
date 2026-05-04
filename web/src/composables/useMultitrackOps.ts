@@ -1,5 +1,6 @@
 import type { MultitrackClip } from '@/api/multitrack'
 import { MultitrackSel, useMultitrackStore } from '@/stores/multitrack'
+import { useModalsStore } from '@/stores/modals'
 import type { Clip } from '@/types/timeline'
 import { carveRange, splitTrack } from '@/utils/timeline'
 
@@ -21,6 +22,7 @@ type ScopedTrack = { kind: 'video' | 'audio'; id: string }
 
 export function useMultitrackOps() {
   const store = useMultitrackStore()
+  const modals = useModalsStore()
 
   function tracksInScope(): ScopedTrack[] {
     const p = store.project
@@ -162,20 +164,25 @@ export function useMultitrackOps() {
   }
 
   /**
-   * Remove a track. Empty tracks vanish silently; tracks with clips
-   * trigger a confirm (window.confirm — no fancy modal in M7).
+   * Remove a track. Empty tracks vanish silently; tracks with clips go
+   * through a styled confirm modal (replaces window.confirm — Wails
+   * suppresses native dialogs, and the OS look is jarring on Web too).
    */
-  function removeTrack(kind: 'video' | 'audio', id: string) {
+  async function removeTrack(kind: 'video' | 'audio', id: string) {
     const p = store.project
     if (!p) return
-    const track =
-      kind === 'video'
-        ? p.videoTracks.find((t) => t.id === id)
-        : p.audioTracks.find((t) => t.id === id)
-    if (!track) return
+    const list = kind === 'video' ? p.videoTracks : p.audioTracks
+    const idx = list.findIndex((t) => t.id === id)
+    if (idx < 0) return
+    const track = list[idx]
     if (track.clips.length > 0) {
-      const label = kind === 'video' ? '视频轨' : '音频轨'
-      const ok = window.confirm(`删除${label} "${id}"？其上 ${track.clips.length} 个片段将一并删除`)
+      const label = `${kind === 'video' ? '视频' : '音频'} ${idx + 1}`
+      const ok = await modals.showConfirm({
+        title: `删除轨道:${label}`,
+        message: `该轨道上有 ${track.clips.length} 个片段,删除后将一并清除。\n此操作可通过 Ctrl+Z 撤销。`,
+        okText: '删除',
+        danger: true,
+      })
       if (!ok) return
     }
     if (kind === 'video') store.removeVideoTrack(id)

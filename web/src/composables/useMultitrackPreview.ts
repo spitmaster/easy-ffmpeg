@@ -227,6 +227,32 @@ export function useMultitrackPreview(
     onTick: gapTick,
   })
 
+  // Video-clock smoother. While a <video> element is playing, store.playhead
+  // would otherwise only advance on the element's 'timeupdate' event, which
+  // browsers throttle to ~4Hz — the timeline cursor and PlayBar timecode look
+  // stuttery even though the video itself plays smoothly. This rAF loop
+  // reads v.currentTime each frame and re-derives program time via the
+  // active top clip's mapping, mirroring onVideoTimeUpdate but at 60Hz.
+  // onVideoTimeUpdate still owns clip-end transitions; this clock only
+  // smooths the per-frame display.
+  const videoClock = useGapClock({
+    shouldContinue: () => {
+      const v = el(videoRef)
+      return store.playing && activeVideoSourceId.value !== '' && !!v && !v.paused
+    },
+    onTick: () => {
+      const v = el(videoRef)
+      if (!v || !store.project) return 'stop'
+      const top = store.topVideoActive(store.playhead)
+      if (!top) return 'stop'
+      const delta = v.currentTime - top.clip.sourceStart
+      const ph = top.clip.programStart + Math.max(0, delta)
+      const total = totalDuration()
+      store.playhead = Math.max(0, Math.min(total, ph))
+      return 'continue'
+    },
+  })
+
   function gapTick(newPh: number): 'continue' | 'stop' {
     if (!store.project) return 'stop'
     const total = totalDuration()
@@ -244,6 +270,7 @@ export function useMultitrackPreview(
       applyVideoFor(newPh)
       const v = el(videoRef)
       if (store.playing && v && v.paused) v.play().catch(() => {})
+      videoClock.start(0)
       return 'stop'
     }
     return 'continue'
@@ -273,10 +300,12 @@ export function useMultitrackPreview(
     if (top && v) {
       gapClock.stop()
       if (v.paused) v.play().catch(() => {})
+      videoClock.start(0)
     } else {
       // Ensure any stale video pause is in effect, then drive via gap clock.
       if (v && !v.paused) v.pause()
       gapClock.stop()
+      videoClock.stop()
       gapClock.start(store.playhead)
     }
   }
@@ -290,6 +319,7 @@ export function useMultitrackPreview(
   function pause() {
     pauseAll()
     gapClock.stop()
+    videoClock.stop()
     store.playing = false
   }
 
@@ -313,8 +343,10 @@ export function useMultitrackPreview(
       if (top && v) {
         gapClock.stop()
         if (v.paused) v.play().catch(() => {})
+        videoClock.start(0)
       } else {
         gapClock.stop()
+        videoClock.stop()
         gapClock.start(store.playhead)
       }
     }
@@ -363,6 +395,7 @@ export function useMultitrackPreview(
     () => store.project?.id,
     () => {
       gapClock.stop()
+      videoClock.stop()
       pauseAll()
       activeVideoSourceId.value = ''
       // refresh once the next render assigns refs.
@@ -396,6 +429,7 @@ export function useMultitrackPreview(
     stopWatchProject()
     stopWatchTracks()
     gapClock.stop()
+    videoClock.stop()
     pauseAll()
     const v = el(videoRef)
     if (v) detachVideoListeners(v)
