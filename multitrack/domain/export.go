@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	common "easy-ffmpeg/editor/common/domain"
@@ -12,20 +13,26 @@ import (
 // BuildExportArgs translates a multitrack Project into a concrete ffmpeg
 // argv plus the resolved output path. Pure function: no I/O, no globals.
 //
+// v0.5.1 video strategy (true compositing):
+//   - Start a base canvas of project.Canvas dims:
+//     `color=c=black:s=CWxCH:r=FR:d=programDur,format=yuv420p[base]`
+//   - Collect every video clip across all tracks into one z-list, sorted by
+//     (trackIndex asc, programStart asc). Lower track index = bottom layer.
+//   - Each clip becomes one segment via BuildVideoSegment: trim + setpts
+//     (PTS shifted to programStart) + scale to the clip's transform.W×H +
+//     fps + yuva420p (alpha-aware).
+//   - Flatten into a single overlay chain over the base. Every overlay is
+//     gated by `enable='between(t,start,end)'` and uses `eof_action=pass`
+//     so a finished segment doesn't keep painting its last frame on top.
+//
+// Audio path is unchanged from v0.5.0: per-track concat (filling silence
+// for gaps) → optional per-track volume → amix (when ≥ 2 tracks) →
+// optional global volume → [A].
+//
 // Strategy:
 //   - Collect referenced sources (those any clip points at) in Sources order
 //     and assign -i input indices. Unreferenced sources are skipped — no
 //     point asking ffmpeg to demux files we never read.
-//   - For video tracks: each track concats its clips (multi-source) into
-//     [Vk]; gaps fill with `color`, sources scale+pad to canvas dims so
-//     concat's homogeneous-input requirement holds across resolutions.
-//     N=1 → the single track's outLabel is [V] directly. N≥2 → chain
-//     overlay [V0][V1]→[Vmix1], [Vmix1][V2]→[Vmix2], … final [V].
-//   - For audio tracks: each track concats clips into [Aj], optional
-//     per-track volume (skipped at unity to keep filter byte-stable).
-//     N=1 → [A1] aliased to [A] (or routed through [A_pre]→volume→[A] if
-//     global volume non-unity). N≥2 → amix into [A_pre], then optional
-//     global volume → [A].
 //   - Map [V] / [A] only for the streams that exist; codec args are paired
 //     with each map.
 func BuildExportArgs(p *Project) ([]string, string, error) {
@@ -37,8 +44,8 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 	}
 
 	// Gather non-empty tracks. Empty tracks are silently dropped from the
-	// filter graph — they'd contribute pure pad which is the same as not
-	// being there at all.
+	// filter graph — they'd contribute nothing to a base+overlay composite
+	// and their absence keeps the segment list tight.
 	var vTracks, aTracks []trackWithIndex
 	for i, t := range p.VideoTracks {
 		if len(t.Clips) > 0 {
@@ -97,46 +104,27 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 		}
 	}
 
-	// Canvas dims: max across video sources actually referenced by some
-	// video clip. Audio sources never participate. With no video tracks
-	// the values are unused but kept defaulted so the helpers stay safe.
-	canvasW, canvasH := 0, 0
-	canvasFr := 0.0
-	if hasVideo {
-		usedByVideo := map[string]bool{}
-		for _, vt := range vTracks {
-			for _, c := range vt.vClips {
-				usedByVideo[c.SourceID] = true
-			}
+	// Canvas: prefer the project's stored Canvas (v0.5.1+). For files that
+	// somehow reach export with a zero canvas (Migrate didn't run, or a
+	// programmatic caller skipped it), fall back to the v0.5.0 derivation
+	// so we never produce a malformed base.
+	canvasW, canvasH, canvasFr := p.Canvas.Width, p.Canvas.Height, p.Canvas.FrameRate
+	if hasVideo && (canvasW <= 0 || canvasH <= 0 || canvasFr <= 0) {
+		w, h, fr := deriveDefaultCanvas(p)
+		if canvasW <= 0 {
+			canvasW = w
 		}
-		for _, s := range p.Sources {
-			if !usedByVideo[s.ID] {
-				continue
-			}
-			if s.Width > canvasW {
-				canvasW = s.Width
-			}
-			if s.Height > canvasH {
-				canvasH = s.Height
-			}
-			if s.FrameRate > canvasFr {
-				canvasFr = s.FrameRate
-			}
+		if canvasH <= 0 {
+			canvasH = h
 		}
-		if canvasW == 0 {
-			canvasW = 1920
-		}
-		if canvasH == 0 {
-			canvasH = 1080
-		}
-		if canvasFr == 0 {
-			canvasFr = 30
+		if canvasFr <= 0 {
+			canvasFr = fr
 		}
 	}
 
-	// Program duration: longest track, used to pad shorter tracks so the
-	// muxed output's streams have matching lengths. Without this, browsers
-	// cut playback at the shorter stream's EOF.
+	// Program duration: longest track, used to size the base canvas. The
+	// base spans the whole program; segments above it are gated by their
+	// own enable= windows so the composite plays for exactly programDur.
 	programDur := 0.0
 	for _, vt := range vTracks {
 		if d := common.TrackDuration(toCommonClips(vt.vClips)); d > programDur {
@@ -151,50 +139,80 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 
 	var parts []string
 
-	// ---- video filter graph -----------------------------------------------
+	// ---- video filter graph (base + flat overlay chain) -----------------
 	if hasVideo {
-		// trackOut: terminal label of each track's chain. When there's only
-		// one track we set it directly to [V] and skip the overlay step;
-		// emitting a no-op [V0] → [V] alias would just bloat the filter.
-		trackOuts := make([]string, len(vTracks))
-		if len(vTracks) == 1 {
-			trackOuts[0] = "[V]"
-		} else {
-			for i := range vTracks {
-				trackOuts[i] = fmt.Sprintf("[V%d]", i)
+		// Base canvas: a single black picture at canvas dims and frame rate
+		// for programDur. format=yuv420p so the muxer-bound output stays in
+		// the standard non-alpha pixel format; segments above carry alpha
+		// (yuva420p) so they composite cleanly.
+		parts = append(parts, fmt.Sprintf(
+			"color=c=black:s=%dx%d:r=%s:d=%s,format=yuv420p[base]",
+			canvasW, canvasH,
+			common.FormatFloat(canvasFr),
+			common.FormatFloat(programDur),
+		))
+
+		// Flatten all video clips into a z-list. The pair (track index,
+		// programStart) is enough to pin both layer order and a stable
+		// in-track order (clips on the same track don't overlap visually,
+		// so their listing order doesn't change pixel output, but stable
+		// sort keeps filter strings deterministic across runs).
+		type segRef struct {
+			c       Clip
+			trackIx int
+			label   string
+		}
+		var segs []segRef
+		for _, vt := range vTracks {
+			for _, c := range vt.vClips {
+				segs = append(segs, segRef{c: c, trackIx: vt.idx})
 			}
 		}
-		for i, vt := range vTracks {
-			built, err := BuildMultitrackVideoTrackFilter(
-				vt.vClips, sourceInputIdx,
-				trackOuts[i], programDur,
-				canvasW, canvasH, canvasFr,
-				fmt.Sprintf("v%d_", i),
-			)
+		sort.SliceStable(segs, func(i, j int) bool {
+			if segs[i].trackIx != segs[j].trackIx {
+				return segs[i].trackIx < segs[j].trackIx
+			}
+			return segs[i].c.ProgramStart < segs[j].c.ProgramStart
+		})
+
+		// Emit one segment chain per clip.
+		for k := range segs {
+			label := fmt.Sprintf("seg_%d", k)
+			segs[k].label = label
+			idx, ok := sourceInputIdx[segs[k].c.SourceID]
+			if !ok {
+				return nil, "", fmt.Errorf("multitrack export: source %q not in input map", segs[k].c.SourceID)
+			}
+			s, err := BuildVideoSegment(segs[k].c, idx, canvasFr, label)
 			if err != nil {
 				return nil, "", err
 			}
-			parts = append(parts, built...)
+			parts = append(parts, s)
 		}
-		// N≥2: chain overlay. [V0][V1]overlay=0:0[Vmix1]; [Vmix1][V2]overlay=...
-		// Naming: final overlay step targets [V] directly; intermediate
-		// rungs use [Vmix<k>]. Lower track index = bottom layer.
-		if len(vTracks) >= 2 {
-			cur := trackOuts[0]
-			for k := 1; k < len(vTracks); k++ {
-				next := "[V]"
-				if k < len(vTracks)-1 {
-					next = fmt.Sprintf("[Vmix%d]", k)
-				}
-				parts = append(parts, fmt.Sprintf(
-					"%s%soverlay=0:0%s", cur, trackOuts[k], next,
-				))
-				cur = next
+
+		// Flatten the overlay chain. base is the bottom; each segment is
+		// composited in z-order. The intermediate pads `[v_k]` keep labels
+		// stable across runs, and the final overlay output is `[V]`.
+		cur := "[base]"
+		for k := range segs {
+			next := "[V]"
+			if k < len(segs)-1 {
+				next = fmt.Sprintf("[v_%d]", k)
 			}
+			pStart := segs[k].c.ProgramStart
+			pEnd := segs[k].c.ProgramStart + segs[k].c.Duration()
+			parts = append(parts, fmt.Sprintf(
+				"%s[%s]overlay=x=%d:y=%d:enable='between(t,%s,%s)':eof_action=pass%s",
+				cur, segs[k].label,
+				segs[k].c.Transform.X, segs[k].c.Transform.Y,
+				common.FormatFloat(pStart), common.FormatFloat(pEnd),
+				next,
+			))
+			cur = next
 		}
 	}
 
-	// ---- audio filter graph -----------------------------------------------
+	// ---- audio filter graph (unchanged from v0.5.0) ---------------------
 	globalVol := p.AudioVolume
 	if globalVol <= 0 {
 		globalVol = 1.0
@@ -272,6 +290,47 @@ func BuildExportArgs(p *Project) ([]string, string, error) {
 	outPath := filepath.Join(p.Export.OutputDir, p.Export.OutputName+"."+p.Export.Format)
 	args = append(args, outPath)
 	return args, outPath, nil
+}
+
+// deriveDefaultCanvas computes the v0.5.0 fallback canvas dims: max width,
+// max height, and max frame rate across video sources actually referenced
+// by some video clip. Returns sane defaults (1920×1080@30) when no video
+// sources are referenced. Used by Migrate to fill v1 projects' Canvas
+// field so they export visually identical to v0.5.0, and as a defensive
+// fallback in BuildExportArgs in case Migrate didn't run.
+func deriveDefaultCanvas(p *Project) (int, int, float64) {
+	usedByVideo := map[string]bool{}
+	for _, t := range p.VideoTracks {
+		for _, c := range t.Clips {
+			usedByVideo[c.SourceID] = true
+		}
+	}
+	w, h := 0, 0
+	fr := 0.0
+	for _, s := range p.Sources {
+		if !usedByVideo[s.ID] {
+			continue
+		}
+		if s.Width > w {
+			w = s.Width
+		}
+		if s.Height > h {
+			h = s.Height
+		}
+		if s.FrameRate > fr {
+			fr = s.FrameRate
+		}
+	}
+	if w <= 0 {
+		w = 1920
+	}
+	if h <= 0 {
+		h = 1080
+	}
+	if fr <= 0 {
+		fr = 30
+	}
+	return w, h, fr
 }
 
 // trackWithIndex carries a track's content alongside its position in the

@@ -8,14 +8,20 @@ import (
 	common "easy-ffmpeg/editor/common/domain"
 )
 
-// baseProject builds a minimal valid multitrack project: two video sources
-// (1080p + 720p) and one audio-only source, one video track with a single
-// clip, one audio track with the matching slice. Tests mutate copies of
-// this fixture to express each scenario.
+// baseProject builds a minimal valid v0.5.1 multitrack project: 1920×1080@30
+// canvas, two video sources (1080p + 720p) and one audio-only source, one
+// video track with a single clip, one audio track with the matching slice.
+// Tests mutate copies of this fixture to express each scenario.
+//
+// Default Transform on every video clip is full canvas (0, 0, 1920, 1080),
+// reproducing v0.5.0's "stretch to canvas" behavior for tests that don't
+// care about composition specifics.
 func baseProject() *Project {
 	return &Project{
-		ID:   "abcdef01",
-		Kind: KindMultitrack,
+		ID:            "abcdef01",
+		Kind:          KindMultitrack,
+		SchemaVersion: SchemaVersion,
+		Canvas:        Canvas{Width: 1920, Height: 1080, FrameRate: 30},
 		Sources: []Source{
 			{
 				ID: "s1", Path: "/tmp/v1.mp4", Kind: SourceVideo,
@@ -57,13 +63,25 @@ func baseProject() *Project {
 	}
 }
 
+// mtClip is the default-Transform helper. Most tests don't care about
+// composition geometry — they want a clip and a 1920×1080 canvas-filling
+// transform. Tests that need a specific layout use mtClipT.
 func mtClip(id, sourceID string, sStart, sEnd, programStart float64) Clip {
 	return Clip{
 		Clip: common.Clip{
 			ID: id, SourceStart: sStart, SourceEnd: sEnd, ProgramStart: programStart,
 		},
-		SourceID: sourceID,
+		SourceID:  sourceID,
+		Transform: Transform{X: 0, Y: 0, W: 1920, H: 1080},
 	}
+}
+
+// mtClipT places a clip at an explicit (x, y, w, h). Used by composition
+// tests (PIP, out-of-bounds, partial overflow).
+func mtClipT(id, sourceID string, sStart, sEnd, programStart float64, x, y, w, h int) Clip {
+	c := mtClip(id, sourceID, sStart, sEnd, programStart)
+	c.Transform = Transform{X: x, Y: y, W: w, H: h}
+	return c
 }
 
 func filterOf(t *testing.T, args []string) string {
@@ -86,19 +104,9 @@ func sliceHasPair(arr []string, a, b string) bool {
 	return false
 }
 
-func indexOfStr(arr []string, s string) int {
-	for i, v := range arr {
-		if v == s {
-			return i
-		}
-	}
-	return -1
-}
-
-// TestBuildExportArgs_SingleVideoSingleAudio: degenerate "1 video track +
-// 1 audio track, single clip each" mirrors a single-video editor project.
-// Assert the trivial path skips overlay (single track → outLabel = [V]
-// directly) and that maps + codecs are wired.
+// TestBuildExportArgs_SingleVideoSingleAudio: degenerate "1 video clip + 1
+// audio clip" mirrors a single-video editor project. v0.5.1 always goes
+// through the base + 1 overlay path (no fast path for N=1; simpler matrix).
 func TestBuildExportArgs_SingleVideoSingleAudio(t *testing.T) {
 	p := baseProject()
 	args, outPath, err := BuildExportArgs(p)
@@ -110,11 +118,10 @@ func TestBuildExportArgs_SingleVideoSingleAudio(t *testing.T) {
 	}
 	filter := filterOf(t, args)
 	want := []string{
-		"[0:v]trim=start=0:end=10",
+		"color=c=black:s=1920x1080:r=30:d=10,format=yuv420p[base]",
+		"[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS+0/TB,scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]",
+		"[base][seg_0]overlay=x=0:y=0:enable='between(t,0,10)':eof_action=pass[V]",
 		"[0:a]atrim=start=0:end=10",
-		// single video track → outLabel is [V] directly, no overlay step
-		"concat=n=1:v=1:a=0[V]",
-		// single audio track + unity global volume → outLabel is [A] directly
 		"concat=n=1:v=0:a=1[A]",
 	}
 	for _, w := range want {
@@ -122,15 +129,9 @@ func TestBuildExportArgs_SingleVideoSingleAudio(t *testing.T) {
 			t.Errorf("filter missing %q\nfilter: %s", w, filter)
 		}
 	}
-	// No overlay should appear (single video track).
-	if strings.Contains(filter, "overlay=") {
-		t.Errorf("single video track should not emit overlay, got: %s", filter)
-	}
-	// No amix should appear (single audio track).
 	if strings.Contains(filter, "amix=") {
 		t.Errorf("single audio track should not emit amix, got: %s", filter)
 	}
-	// Volume filter should be omitted at unity.
 	if strings.Contains(filter, "volume=") {
 		t.Errorf("unity volumes should omit volume filter, got: %s", filter)
 	}
@@ -146,8 +147,6 @@ func TestBuildExportArgs_SingleVideoSingleAudio(t *testing.T) {
 	if !sliceHasPair(args, "-c:a", "aac") {
 		t.Errorf("want aac, got args=%v", args)
 	}
-	// Only s1 is referenced — s2 / s3 should not appear as -i. Check by
-	// counting -i occurrences.
 	iCount := 0
 	for _, a := range args {
 		if a == "-i" {
@@ -159,14 +158,15 @@ func TestBuildExportArgs_SingleVideoSingleAudio(t *testing.T) {
 	}
 }
 
-// TestBuildExportArgs_TwoVideoTracksEqualLength: two video tracks each
-// with one clip, both 10s — assert the chain emits [V0] [V1] and a single
-// overlay into [V].
-func TestBuildExportArgs_TwoVideoTracksEqualLength(t *testing.T) {
+// TestBuildExportArgs_SingleVideoTrackTwoClips: two non-overlapping clips
+// with different transforms on the same video track → two segments + two
+// overlays. Lower track index = bottom; same-track clips sort by
+// programStart for stable filter strings.
+func TestBuildExportArgs_SingleVideoTrackTwoClips(t *testing.T) {
 	p := baseProject()
-	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
-		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 20, 30, 0)}},
+	p.VideoTracks[0].Clips = []Clip{
+		mtClipT("v1", "s1", 0, 5, 0, 0, 0, 960, 540),    // top-left half
+		mtClipT("v2", "s1", 5, 10, 5, 960, 540, 960, 540), // bottom-right half
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -175,9 +175,10 @@ func TestBuildExportArgs_TwoVideoTracksEqualLength(t *testing.T) {
 	}
 	filter := filterOf(t, args)
 	want := []string{
-		"concat=n=1:v=1:a=0[V0]",
-		"concat=n=1:v=1:a=0[V1]",
-		"[V0][V1]overlay=0:0[V]",
+		"[0:v]trim=start=0:end=5,setpts=PTS-STARTPTS+0/TB,scale=960:540,setsar=1,fps=30,format=yuva420p[seg_0]",
+		"[0:v]trim=start=5:end=10,setpts=PTS-STARTPTS+5/TB,scale=960:540,setsar=1,fps=30,format=yuva420p[seg_1]",
+		"[base][seg_0]overlay=x=0:y=0:enable='between(t,0,5)':eof_action=pass[v_0]",
+		"[v_0][seg_1]overlay=x=960:y=540:enable='between(t,5,10)':eof_action=pass[V]",
 	}
 	for _, w := range want {
 		if !strings.Contains(filter, w) {
@@ -186,13 +187,15 @@ func TestBuildExportArgs_TwoVideoTracksEqualLength(t *testing.T) {
 	}
 }
 
-// TestBuildExportArgs_TwoVideoTracksUnequalShortTrackPads: shorter track
-// should get a trailing color pad sized to the difference.
-func TestBuildExportArgs_TwoVideoTracksUnequalShortTrackPads(t *testing.T) {
+// TestBuildExportArgs_PipTwoTracks: classic Picture-in-Picture — the second
+// (upper) video track holds a small window placed in the bottom-right
+// corner, the first (bottom) track holds a full-screen clip. Lower track
+// index renders below; the upper track's segment becomes the PIP window.
+func TestBuildExportArgs_PipTwoTracks(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 30, 0)}}, // 30s
-		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 0, 10, 0)}}, // 10s — needs 20s pad
+		{ID: "vt1", Clips: []Clip{mtClipT("v1", "s1", 0, 10, 0, 0, 0, 1920, 1080)}},   // bottom: full-screen
+		{ID: "vt2", Clips: []Clip{mtClipT("v2", "s2", 0, 10, 0, 1440, 720, 480, 360)}}, // top: small PIP, bottom-right
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -200,13 +203,204 @@ func TestBuildExportArgs_TwoVideoTracksUnequalShortTrackPads(t *testing.T) {
 		t.Fatal(err)
 	}
 	filter := filterOf(t, args)
-	// Short track now has 2 segments (1 clip + 20s pad).
-	if !strings.Contains(filter, "concat=n=2:v=1:a=0[V1]") {
-		t.Errorf("short track should pad to programDur (n=2), got: %s", filter)
+	// Two segments — bottom track's first (seg_0), top's PIP (seg_1).
+	wantOrder := []string{
+		"scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]", // bottom track
+		"scale=480:360,setsar=1,fps=30,format=yuva420p[seg_1]",   // PIP
+		"[base][seg_0]overlay=x=0:y=0:",
+		"[v_0][seg_1]overlay=x=1440:y=720:",
+		":eof_action=pass[V]",
 	}
-	// Pad emitted as 20s of canvas-sized black at canvasFr (max FR = 30).
-	if !strings.Contains(filter, "color=c=black:s=1920x1080:r=30:d=20") {
-		t.Errorf("missing 20s trailing black pad on short video track: %s", filter)
+	for _, w := range wantOrder {
+		if !strings.Contains(filter, w) {
+			t.Errorf("filter missing %q\nfilter: %s", w, filter)
+		}
+	}
+	// Both s1 and s2 should be inputs (in Sources order).
+	if !sliceHasPair(args, "-i", "/tmp/v1.mp4") || !sliceHasPair(args, "-i", "/tmp/v2.mp4") {
+		t.Errorf("expected s1 and s2 as inputs, got args=%v", args)
+	}
+}
+
+// TestBuildExportArgs_TwoTracksUpperFullCovers: v0.5.0 visual equivalence
+// when both clips are full-canvas and the upper track is opaque (no alpha
+// transparency in the source). The bottom should be invisible — verified
+// by the overlay chain order; we don't assert pixel output here, just the
+// chain shape.
+func TestBuildExportArgs_TwoTracksUpperFullCovers(t *testing.T) {
+	p := baseProject()
+	p.VideoTracks = []VideoTrack{
+		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
+		{ID: "vt2", Clips: []Clip{mtClip("v2", "s2", 0, 10, 0)}},
+	}
+	p.AudioTracks = nil
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := filterOf(t, args)
+	// Both segments scale to full 1920×1080.
+	if !strings.Contains(filter, "scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]") {
+		t.Errorf("missing seg_0 full-canvas scale: %s", filter)
+	}
+	if !strings.Contains(filter, "scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_1]") {
+		t.Errorf("missing seg_1 full-canvas scale: %s", filter)
+	}
+	// Bottom (vt1) overlaid first onto base; top (vt2) overlaid onto v_0.
+	if !strings.Contains(filter, "[base][seg_0]overlay=x=0:y=0:") {
+		t.Errorf("expected vt1 segment over base: %s", filter)
+	}
+	if !strings.Contains(filter, "[v_0][seg_1]overlay=x=0:y=0:") {
+		t.Errorf("expected vt2 segment over v_0: %s", filter)
+	}
+}
+
+// TestBuildExportArgs_ThreeTrackZOrder: three tracks → three segments,
+// chain order = (base→seg_0)→seg_1→seg_2 with seg_0 at bottom.
+func TestBuildExportArgs_ThreeTrackZOrder(t *testing.T) {
+	p := baseProject()
+	p.VideoTracks = []VideoTrack{
+		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
+		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 20, 30, 0)}},
+		{ID: "vt3", Clips: []Clip{mtClip("v3", "s1", 40, 50, 0)}},
+	}
+	p.AudioTracks = nil
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := filterOf(t, args)
+	want := []string{
+		"[base][seg_0]overlay=",
+		"[v_0][seg_1]overlay=",
+		"[v_1][seg_2]overlay=",
+	}
+	for _, w := range want {
+		if !strings.Contains(filter, w) {
+			t.Errorf("missing rung %q\nfilter: %s", w, filter)
+		}
+	}
+	// Final overlay must terminate at [V].
+	if !strings.Contains(filter, ":eof_action=pass[V]") {
+		t.Errorf("missing final [V] terminator: %s", filter)
+	}
+}
+
+// TestBuildExportArgs_TransformOutOfBoundsAllowed: a clip whose transform
+// places it entirely outside the canvas is allowed. The filter graph still
+// emits the segment and overlay; ffmpeg's overlay drops the unseen pixels.
+func TestBuildExportArgs_TransformOutOfBoundsAllowed(t *testing.T) {
+	p := baseProject()
+	p.VideoTracks[0].Clips = []Clip{
+		// Way out: x=3000 on a 1920-wide canvas.
+		mtClipT("v1", "s1", 0, 10, 0, 3000, 0, 200, 200),
+	}
+	p.AudioTracks = nil
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatalf("OOB transform should be allowed at export, got %v", err)
+	}
+	filter := filterOf(t, args)
+	if !strings.Contains(filter, "scale=200:200,setsar=1,fps=30,format=yuva420p[seg_0]") {
+		t.Errorf("OOB segment still expected: %s", filter)
+	}
+	if !strings.Contains(filter, "[base][seg_0]overlay=x=3000:y=0:") {
+		t.Errorf("OOB overlay should still be emitted: %s", filter)
+	}
+}
+
+// TestBuildExportArgs_TransformPartialOutOfBoundsNoCrop: a transform that
+// straddles the canvas edge must NOT be clipped at the filter graph level
+// — overlay handles the visible region; we don't pre-crop.
+func TestBuildExportArgs_TransformPartialOutOfBoundsNoCrop(t *testing.T) {
+	p := baseProject()
+	p.VideoTracks[0].Clips = []Clip{
+		// Half off the right edge: x=1800, w=300 → 120 visible.
+		mtClipT("v1", "s1", 0, 10, 0, 1800, 0, 300, 200),
+	}
+	p.AudioTracks = nil
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := filterOf(t, args)
+	if !strings.Contains(filter, "scale=300:300,setsar=1,fps=30,format=yuva420p[seg_0]") {
+		// Note: scale uses transform W (300), H (200). Update assertion.
+	}
+	if !strings.Contains(filter, "scale=300:200,setsar=1,fps=30,format=yuva420p[seg_0]") {
+		t.Errorf("missing partial-OOB segment with full transform W×H: %s", filter)
+	}
+	if strings.Contains(filter, "crop=") {
+		t.Errorf("partial OOB should not introduce crop filter: %s", filter)
+	}
+}
+
+// TestBuildExportArgs_CanvasFrameRateApplied: a non-default canvas FR
+// (60fps) must surface in both the base and each segment's fps= clause.
+func TestBuildExportArgs_CanvasFrameRateApplied(t *testing.T) {
+	p := baseProject()
+	p.Canvas.FrameRate = 60
+	p.AudioTracks = nil
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := filterOf(t, args)
+	if !strings.Contains(filter, "color=c=black:s=1920x1080:r=60:d=10,format=yuv420p[base]") {
+		t.Errorf("base must use canvas FR 60: %s", filter)
+	}
+	if !strings.Contains(filter, "fps=60,format=yuva420p[seg_0]") {
+		t.Errorf("segment must force canvas FR 60: %s", filter)
+	}
+}
+
+// TestBuildExportArgs_PtsShiftToProgramStart: a clip with programStart=2.5
+// must shift its setpts by exactly 2.5/TB, not start at 0. This is the
+// single most important correctness check — without it segments stack at
+// the timeline's beginning regardless of programStart.
+func TestBuildExportArgs_PtsShiftToProgramStart(t *testing.T) {
+	p := baseProject()
+	p.VideoTracks[0].Clips = []Clip{
+		mtClipT("v1", "s1", 0, 5, 0, 0, 0, 1920, 1080),
+		mtClipT("v2", "s1", 0, 5, 7.5, 0, 0, 1920, 1080), // gap before, programStart=7.5
+	}
+	p.AudioTracks = nil
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := filterOf(t, args)
+	if !strings.Contains(filter, "setpts=PTS-STARTPTS+0/TB,") {
+		t.Errorf("first segment should shift by 0/TB (= no shift): %s", filter)
+	}
+	if !strings.Contains(filter, "setpts=PTS-STARTPTS+7.5/TB,") {
+		t.Errorf("second segment should shift by 7.5/TB: %s", filter)
+	}
+	// And the matching overlay enable window.
+	if !strings.Contains(filter, "enable='between(t,7.5,12.5)'") {
+		t.Errorf("missing 7.5..12.5 enable window for second segment: %s", filter)
+	}
+}
+
+// TestBuildExportArgs_BaseDurationMatchesProgramDur: the base canvas must
+// span exactly the longest track's duration so the composite plays for
+// the whole program (no premature cut, no trailing dead frames).
+func TestBuildExportArgs_BaseDurationMatchesProgramDur(t *testing.T) {
+	p := baseProject()
+	p.VideoTracks = []VideoTrack{
+		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
+	}
+	// Audio extends past video — programDur should reflect the audio length (15s).
+	p.AudioTracks = []AudioTrack{
+		{ID: "at1", Volume: 1.0, Clips: []Clip{mtClip("a1", "s1", 0, 15, 0)}},
+	}
+	args, _, err := BuildExportArgs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter := filterOf(t, args)
+	if !strings.Contains(filter, "color=c=black:s=1920x1080:r=30:d=15,format=yuv420p[base]") {
+		t.Errorf("base must extend to programDur=15s: %s", filter)
 	}
 }
 
@@ -225,7 +419,8 @@ func TestBuildExportArgs_RejectsVideoLeadingGap(t *testing.T) {
 }
 
 // TestBuildExportArgs_AcceptsAudioLeadingGap: the audio chain should emit
-// an anullsrc prefix when the first audio clip starts after 0.
+// an anullsrc prefix when the first audio clip starts after 0. Video path
+// is independent (default fixture clip at programStart=0).
 func TestBuildExportArgs_AcceptsAudioLeadingGap(t *testing.T) {
 	p := baseProject()
 	p.AudioTracks[0].Clips = []Clip{mtClip("a1", "s1", 0, 8, 1.5)}
@@ -239,35 +434,8 @@ func TestBuildExportArgs_AcceptsAudioLeadingGap(t *testing.T) {
 	}
 }
 
-// TestBuildExportArgs_ThreeVideoTracksZOrder: chain overlay must apply
-// in track order — V0 bottom, V1 over V0, V2 over the result.
-func TestBuildExportArgs_ThreeVideoTracksZOrder(t *testing.T) {
-	p := baseProject()
-	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 10, 0)}},
-		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 20, 30, 0)}},
-		{ID: "vt3", Clips: []Clip{mtClip("v3", "s1", 40, 50, 0)}},
-	}
-	p.AudioTracks = nil
-	args, _, err := BuildExportArgs(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	filter := filterOf(t, args)
-	// V0 bottom, V1 onto V0 → Vmix1; V2 onto Vmix1 → V (final).
-	want := []string{
-		"[V0][V1]overlay=0:0[Vmix1]",
-		"[Vmix1][V2]overlay=0:0[V]",
-	}
-	for _, w := range want {
-		if !strings.Contains(filter, w) {
-			t.Errorf("missing chain rung %q\nfilter: %s", w, filter)
-		}
-	}
-}
-
 // TestBuildExportArgs_SingleAudioGlobalVolume: unity vs non-unity branch
-// for the single-audio-track + global-volume case.
+// for the single-audio-track + global-volume case (audio path unchanged).
 func TestBuildExportArgs_SingleAudioGlobalVolume(t *testing.T) {
 	t.Run("unity volume → straight to [A]", func(t *testing.T) {
 		p := baseProject()
@@ -308,7 +476,7 @@ func TestBuildExportArgs_SingleAudioGlobalVolume(t *testing.T) {
 func TestBuildExportArgs_TwoAudioTracksAmix(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks = nil
-	p.AudioVolume = 1.0 // unity → amix output is [A] directly
+	p.AudioVolume = 1.0
 	p.AudioTracks = []AudioTrack{
 		{ID: "at1", Volume: 1.0, Clips: []Clip{mtClip("a1", "s1", 0, 10, 0)}},
 		{ID: "at2", Volume: 0.6, Clips: []Clip{mtClip("a2", "s3", 0, 10, 0)}},
@@ -319,9 +487,9 @@ func TestBuildExportArgs_TwoAudioTracksAmix(t *testing.T) {
 	}
 	filter := filterOf(t, args)
 	want := []string{
-		"concat=n=1:v=0:a=1[A0]",       // track 0 unity → straight to [A0]
-		"concat=n=1:v=0:a=1[A1_pre]",    // track 1 non-unity → [A1_pre]
-		"[A1_pre]volume=0.6[A1]",        // → [A1]
+		"concat=n=1:v=0:a=1[A0]",
+		"concat=n=1:v=0:a=1[A1_pre]",
+		"[A1_pre]volume=0.6[A1]",
 		"[A0][A1]amix=inputs=2:duration=longest:dropout_transition=0[A]",
 	}
 	for _, w := range want {
@@ -357,16 +525,14 @@ func TestBuildExportArgs_TwoAudioTracksAmix_GlobalVolume(t *testing.T) {
 	}
 }
 
-// TestBuildExportArgs_CrossSourceClipSequence: a single track containing
-// clips from two different sources should produce [0:v]trim and [1:v]trim
-// references with the input-order map honored.
+// TestBuildExportArgs_CrossSourceClipSequence: a single track with clips
+// from two different sources still produces both [0:v]trim and [1:v]trim,
+// each scaled to its own transform (not a shared scale+pad chain).
 func TestBuildExportArgs_CrossSourceClipSequence(t *testing.T) {
 	p := baseProject()
-	// Use both s1 and s2 on the video track, drop the audio track to
-	// keep the assertion focused.
 	p.VideoTracks[0].Clips = []Clip{
-		mtClip("v1", "s1", 0, 5, 0),
-		mtClip("v2", "s2", 0, 5, 5),
+		mtClipT("v1", "s1", 0, 5, 0, 0, 0, 1920, 1080),
+		mtClipT("v2", "s2", 0, 5, 5, 0, 0, 1280, 720), // smaller window
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -380,20 +546,27 @@ func TestBuildExportArgs_CrossSourceClipSequence(t *testing.T) {
 	if !strings.Contains(filter, "[1:v]trim=start=0:end=5") {
 		t.Errorf("missing s2 trim from input 1: %s", filter)
 	}
-	// Both s1 and s2 should be -i, in Sources order.
+	// Each clip scales to its own transform, not to a shared canvas.
+	if !strings.Contains(filter, "scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]") {
+		t.Errorf("seg_0 should scale to its transform: %s", filter)
+	}
+	if !strings.Contains(filter, "scale=1280:720,setsar=1,fps=30,format=yuva420p[seg_1]") {
+		t.Errorf("seg_1 should scale to its transform: %s", filter)
+	}
 	if !sliceHasPair(args, "-i", "/tmp/v1.mp4") || !sliceHasPair(args, "-i", "/tmp/v2.mp4") {
 		t.Errorf("expected both s1 and s2 as inputs, got args=%v", args)
 	}
 }
 
-// TestBuildExportArgs_ResolutionMismatchScalePad: every video segment
-// must end with the canvas-sized scale+pad+setsar+format chain so concat
-// across heterogeneous resolutions is legal.
-func TestBuildExportArgs_ResolutionMismatchScalePad(t *testing.T) {
+// TestBuildExportArgs_PerClipScaleNoSharedPad: heterogeneous resolutions
+// no longer require a shared scale+pad chain. v0.5.0 emitted
+// `scale=...,pad=...` per segment to homogenise concat inputs; v0.5.1
+// instead lets each clip carry its own transform W×H.
+func TestBuildExportArgs_PerClipScaleNoSharedPad(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks[0].Clips = []Clip{
-		mtClip("v1", "s1", 0, 5, 0), // 1080p
-		mtClip("v2", "s2", 0, 5, 5), // 720p
+		mtClipT("v1", "s1", 0, 5, 0, 0, 0, 1920, 1080),
+		mtClipT("v2", "s2", 0, 5, 5, 0, 0, 1280, 720),
 	}
 	p.AudioTracks = nil
 	args, _, err := BuildExportArgs(p)
@@ -401,10 +574,12 @@ func TestBuildExportArgs_ResolutionMismatchScalePad(t *testing.T) {
 		t.Fatal(err)
 	}
 	filter := filterOf(t, args)
-	// canvas = max(1920, 1280) × max(1080, 720) = 1920×1080
-	scale := "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p"
-	if !strings.Contains(filter, scale) {
-		t.Errorf("missing scale+pad to canvas dims: %s", filter)
+	// v0.5.0's pad chain must be gone — segments don't pad to canvas anymore.
+	if strings.Contains(filter, "force_original_aspect_ratio=decrease") {
+		t.Errorf("v0.5.1 should not emit force_original_aspect_ratio: %s", filter)
+	}
+	if strings.Contains(filter, "pad=1920:1080") {
+		t.Errorf("v0.5.1 should not emit shared pad: %s", filter)
 	}
 }
 
@@ -476,7 +651,7 @@ func TestBuildExportArgs_AudioOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	filter := filterOf(t, args)
-	if strings.Contains(filter, "[0:v]trim") || strings.Contains(filter, "color=c=black") {
+	if strings.Contains(filter, "[base]") || strings.Contains(filter, "color=c=black") {
 		t.Errorf("audio-only project should have no video chain: %s", filter)
 	}
 	if sliceHasPair(args, "-map", "[V]") {
@@ -527,20 +702,15 @@ func TestBuildExportArgs_RejectsMissingExportSettings(t *testing.T) {
 			}
 		})
 	}
-	// nil project should also error.
 	if _, _, err := BuildExportArgs(nil); err == nil {
 		t.Error("nil project should error")
 	}
 }
 
 // TestBuildExportArgs_UnreferencedSourcesNotInputs: sources never used by
-// any clip must not appear as -i. Saves CPU/IO at ffmpeg start-up; also
-// avoids polluting the input index map for sources that exist only in the
-// library.
+// any clip must not appear as -i.
 func TestBuildExportArgs_UnreferencedSourcesNotInputs(t *testing.T) {
 	p := baseProject()
-	// Only s1 used on video, only s1 on audio (default fixture). s2 / s3
-	// are unreferenced. Ensure -i count is 1 and the path matches s1.
 	args, _, err := BuildExportArgs(p)
 	if err != nil {
 		t.Fatal(err)
@@ -553,63 +723,114 @@ func TestBuildExportArgs_UnreferencedSourcesNotInputs(t *testing.T) {
 	if !sliceHasPair(args, "-i", "/tmp/v1.mp4") {
 		t.Errorf("referenced source should be -i'd, got args=%v", args)
 	}
-	_ = indexOfStr(args, "-i") // sanity
 }
 
-// TestBuildExportArgs_GapEmitsBlackAndSilence: mid-track gaps render as
-// canvas-sized black (video) and silence (audio).
-func TestBuildExportArgs_GapEmitsBlackAndSilence(t *testing.T) {
+// TestBuildExportArgs_GapNoBlackEmitted: in v0.5.1, mid-track video gaps
+// no longer emit a `color=c=black` segment per gap — the base canvas IS
+// the visible "between clips" frame, and a gap is just the absence of an
+// overlay during that window. Audio path still emits anullsrc per gap.
+func TestBuildExportArgs_GapNoBlackEmitted(t *testing.T) {
 	p := baseProject()
 	p.VideoTracks[0].Clips = []Clip{
 		mtClip("v1", "s1", 0, 10, 0),
-		mtClip("v2", "s1", 20, 25, 15), // 5s gap
+		mtClip("v2", "s1", 20, 25, 15), // 5s gap on the video track
 	}
 	p.AudioTracks[0].Clips = []Clip{
 		mtClip("a1", "s1", 0, 10, 0),
-		mtClip("a2", "s1", 20, 25, 15), // 5s gap
+		mtClip("a2", "s1", 20, 25, 15), // 5s gap on the audio track
 	}
 	args, _, err := BuildExportArgs(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	filter := filterOf(t, args)
-	want := []string{
-		"color=c=black:s=1920x1080:r=30:d=5",
-		"anullsrc=r=48000:cl=stereo:d=5",
-		"concat=n=3:v=1:a=0[V]", // single video track → outLabel is [V] directly
-		"concat=n=1:v=0:a=1[A]", // single audio track unity → outLabel [A]
+
+	// The base canvas spans the full programDur (20s); video gap is just
+	// the time window with no overlay enabled.
+	if !strings.Contains(filter, "color=c=black:s=1920x1080:r=30:d=20,format=yuv420p[base]") {
+		t.Errorf("base must span full programDur: %s", filter)
 	}
-	// Audio track: 2 clips + 5s gap = n=3 segments
-	if !strings.Contains(filter, "concat=n=3:v=0:a=1[A]") {
-		t.Errorf("audio track expected n=3 concat, got: %s", filter)
+	// Video gaps no longer produce per-segment color=c=black inserts.
+	if strings.Contains(filter, "color=c=black:s=1920x1080:r=30:d=5") {
+		t.Errorf("v0.5.1 should not emit per-gap black segments: %s", filter)
 	}
-	// Tweak: video should also be n=3.
-	for _, w := range want[:3] {
+	// Both segments are present with their own enable windows.
+	wantSegments := []string{
+		"setpts=PTS-STARTPTS+0/TB,",
+		"setpts=PTS-STARTPTS+15/TB,",
+	}
+	for _, w := range wantSegments {
 		if !strings.Contains(filter, w) {
-			t.Errorf("missing %q\nfilter: %s", w, filter)
+			t.Errorf("missing segment shift %q: %s", w, filter)
 		}
+	}
+	// Audio still has its anullsrc gap segment.
+	if !strings.Contains(filter, "anullsrc=r=48000:cl=stereo:d=5") {
+		t.Errorf("audio gap must still emit anullsrc: %s", filter)
 	}
 }
 
-// TestBuildExportArgs_LabelPrefixIsolation: a project with two video tracks
-// must use distinct label prefixes so [v0_v0] and [v1_v0] don't collide
-// on the second track's first segment.
-func TestBuildExportArgs_LabelPrefixIsolation(t *testing.T) {
-	p := baseProject()
-	p.VideoTracks = []VideoTrack{
-		{ID: "vt1", Clips: []Clip{mtClip("v1", "s1", 0, 5, 0)}},
-		{ID: "vt2", Clips: []Clip{mtClip("v2", "s1", 5, 10, 0)}},
+// TestBuildExportArgs_V050BackwardCompat: a project loaded as v0.5.0
+// (schemaVersion=1, zero Canvas, all clips with zero Transform) must
+// migrate cleanly and produce a working filter graph. The Migrate-injected
+// canvas comes from max(referenced video sources), and Transform fills
+// to full canvas — i.e. all segments are full-screen, replicating the
+// old behavior.
+func TestBuildExportArgs_V050BackwardCompat(t *testing.T) {
+	// Legacy-shaped project: no Canvas, no per-clip Transform.
+	p := &Project{
+		ID:            "legacy",
+		Kind:          KindMultitrack,
+		SchemaVersion: 1,
+		Sources: []Source{
+			{ID: "s1", Path: "/tmp/v1.mp4", Kind: SourceVideo, Duration: 60, Width: 1920, Height: 1080, FrameRate: 30, HasAudio: true},
+			{ID: "s2", Path: "/tmp/v2.mp4", Kind: SourceVideo, Duration: 60, Width: 1280, Height: 720, FrameRate: 25, HasAudio: true},
+		},
+		AudioVolume: 1.0,
+		VideoTracks: []VideoTrack{
+			{
+				ID: "vt1",
+				Clips: []Clip{
+					{Clip: common.Clip{ID: "v1", SourceStart: 0, SourceEnd: 5, ProgramStart: 0}, SourceID: "s1"},
+					{Clip: common.Clip{ID: "v2", SourceStart: 0, SourceEnd: 5, ProgramStart: 5}, SourceID: "s2"},
+				},
+			},
+		},
+		Export: common.ExportSettings{
+			Format: "mp4", VideoCodec: "h264", AudioCodec: "aac",
+			OutputDir: "/tmp", OutputName: "legacy",
+		},
 	}
-	p.AudioTracks = nil
+	p.Migrate()
+
+	// Migrated canvas = max(1920, 1280) × max(1080, 720) @ max(30, 25) = 1920×1080@30.
+	if p.Canvas.Width != 1920 || p.Canvas.Height != 1080 || p.Canvas.FrameRate != 30 {
+		t.Fatalf("Migrate canvas = %+v, want 1920x1080@30", p.Canvas)
+	}
+	// Every clip's transform = full canvas.
+	for _, c := range p.VideoTracks[0].Clips {
+		if c.Transform != (Transform{X: 0, Y: 0, W: 1920, H: 1080}) {
+			t.Errorf("Migrate clip %q transform = %+v, want full canvas", c.ID, c.Transform)
+		}
+	}
+	// SchemaVersion bumped.
+	if p.SchemaVersion != SchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", p.SchemaVersion, SchemaVersion)
+	}
+	// And the export builds without error.
 	args, _, err := BuildExportArgs(p)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("legacy project should export: %v", err)
 	}
 	filter := filterOf(t, args)
-	if !strings.Contains(filter, "[v0_v0]") {
-		t.Errorf("missing v0 track prefix label: %s", filter)
+	wantPieces := []string{
+		"color=c=black:s=1920x1080:r=30:d=10,format=yuv420p[base]",
+		"scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_0]",
+		"scale=1920:1080,setsar=1,fps=30,format=yuva420p[seg_1]",
 	}
-	if !strings.Contains(filter, "[v1_v0]") {
-		t.Errorf("missing v1 track prefix label: %s", filter)
+	for _, w := range wantPieces {
+		if !strings.Contains(filter, w) {
+			t.Errorf("missing legacy-migrated piece %q: %s", w, filter)
+		}
 	}
 }

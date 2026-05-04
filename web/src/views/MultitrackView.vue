@@ -541,12 +541,19 @@ function newClipID(): string {
 }
 
 function makeClip(src: MultitrackSource, programStart: number): MultitrackClip {
+  // Default Transform to full canvas — same behavior as v0.5.0 (clip
+  // stretches to fill the frame). Inspector / TransformOverlay (M5) is
+  // the path that lets the user customise it.
+  const canvas = store.project?.canvas
+  const w = canvas?.width ?? 1920
+  const h = canvas?.height ?? 1080
   return {
     id: newClipID(),
     sourceId: src.id,
     sourceStart: 0,
     sourceEnd: src.duration > 0 ? src.duration : 0.001,
     programStart,
+    transform: { x: 0, y: 0, w, h },
   }
 }
 

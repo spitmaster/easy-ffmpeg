@@ -4,6 +4,20 @@ import (
 	common "easy-ffmpeg/editor/common/domain"
 )
 
+// Transform places a video clip on the project canvas (v0.5.1+). Coordinates
+// and dimensions are integer pixels in canvas space; the source frame is
+// scaled to (W, H) and laid down with its top-left at (X, Y). Out-of-bounds
+// values are allowed (animation in/out semantics; UI flags them).
+//
+// Audio clips ignore Transform — its zero value still serializes, which is
+// harmless and keeps a single Clip type usable across video/audio tracks.
+type Transform struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"` // > 0 (Validate enforces)
+	H int `json:"h"` // > 0
+}
+
 // Clip is the multitrack-specific clip extension. The shared
 // editor/common/domain.Clip is source-agnostic — single-video resolves the
 // source from Project.Source, but multitrack clips on the same track may
@@ -16,10 +30,12 @@ import (
 // the shared functions accept. Promoted fields keep field access
 // (`clip.SourceStart`) transparent. JSON shape:
 //
-//	{ "id": "...", "sourceStart": ..., "sourceEnd": ..., "programStart": ..., "sourceId": "..." }
+//	{ "id": "...", "sourceStart": ..., "sourceEnd": ..., "programStart": ...,
+//	  "sourceId": "...", "transform": { "x": 0, "y": 0, "w": 1920, "h": 1080 } }
 type Clip struct {
 	common.Clip
-	SourceID string `json:"sourceId"`
+	SourceID  string    `json:"sourceId"`
+	Transform Transform `json:"transform"`
 }
 
 // toCommonClips copies a multitrack clip slice into a plain common.Clip

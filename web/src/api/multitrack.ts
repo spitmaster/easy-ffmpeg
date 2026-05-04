@@ -28,11 +28,31 @@ export interface MultitrackSource {
 }
 
 /**
+ * Per-clip placement on the project canvas (v0.5.1+). Mirrors
+ * multitrack/domain.Transform on the Go side. Integer pixels in canvas
+ * space; the source frame is scaled to (w, h) and laid down with its
+ * top-left at (x, y). Out-of-bounds values are allowed.
+ *
+ * Audio clips ignore this; the backend Migrate fills v1 → v2 defaults
+ * (full canvas) before any clip reaches the frontend, so M3 stores
+ * receive populated values.
+ */
+export interface MultitrackTransform {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/**
  * Multitrack-specific clip — extends the shared TimelineClip with the id
  * of the source it slices. Mirrors multitrack/domain.Clip on the Go side
- * (an embedded common.Clip + a SourceID field).
+ * (an embedded common.Clip + SourceID + Transform).
  */
-export type MultitrackClip = TimelineClip & { sourceId: string }
+export type MultitrackClip = TimelineClip & {
+  sourceId: string
+  transform: MultitrackTransform
+}
 
 export interface MultitrackVideoTrack {
   id: string
@@ -49,6 +69,17 @@ export interface MultitrackAudioTrack {
   clips: MultitrackClip[]
 }
 
+/**
+ * Project-level output frame (v0.5.1+). Mirrors multitrack/domain.Canvas
+ * on the Go side. Defaults are 1920×1080@30 for new projects; v0.5.0
+ * files migrate to max() across referenced video sources.
+ */
+export interface MultitrackCanvas {
+  width: number      // ≥ 16
+  height: number     // ≥ 16
+  frameRate: number  // (0, 240]
+}
+
 export interface MultitrackProject {
   schemaVersion: number
   kind: 'multitrack'
@@ -57,6 +88,7 @@ export interface MultitrackProject {
   createdAt: string
   updatedAt: string
   sources: MultitrackSource[]
+  canvas: MultitrackCanvas
   audioVolume?: number
   videoTracks: MultitrackVideoTrack[]
   audioTracks: MultitrackAudioTrack[]

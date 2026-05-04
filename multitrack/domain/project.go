@@ -15,7 +15,20 @@ import (
 // SchemaVersion is the on-disk schema version for multitrack project JSON.
 //
 // v1: initial — Sources, VideoTracks, AudioTracks, AudioVolume, Export.
-const SchemaVersion = 1
+// v2 (v0.5.1): adds Project.Canvas + per-video-clip Transform. Migrate fills
+// defaults so v1 files load without user action and export visually identical
+// to v0.5.0 (canvas = max(referenced video sources); transform = full canvas).
+const SchemaVersion = 2
+
+// Canvas is the project-level output frame (v0.5.1+). All video clips are
+// composited onto a base of these dimensions at export time. Defaults are
+// 1920×1080@30 for new projects; v0.5.0 files migrate to max() across
+// referenced video sources.
+type Canvas struct {
+	Width     int     `json:"width"`     // ≥ 16 (Validate enforces)
+	Height    int     `json:"height"`    // ≥ 16
+	FrameRate float64 `json:"frameRate"` // (0, 240]
+}
 
 // Kind discriminator. Multitrack projects sit in a separate data directory
 // from single-video projects, but the field guards against accidental
@@ -83,6 +96,7 @@ type Project struct {
 	CreatedAt     time.Time      `json:"createdAt"`
 	UpdatedAt     time.Time      `json:"updatedAt"`
 	Sources       []Source       `json:"sources"`
+	Canvas        Canvas         `json:"canvas"`                // v0.5.1+; Migrate fills defaults for v1 files
 	AudioVolume   float64        `json:"audioVolume,omitempty"` // 0–2.0; 0 → 1.0 by Migrate
 	VideoTracks   []VideoTrack   `json:"videoTracks"`
 	AudioTracks   []AudioTrack   `json:"audioTracks"`
@@ -101,6 +115,7 @@ func NewProject(id, name string, now time.Time) *Project {
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		Sources:       []Source{},
+		Canvas:        Canvas{Width: 1920, Height: 1080, FrameRate: 30},
 		VideoTracks:   []VideoTrack{},
 		AudioTracks:   []AudioTrack{},
 		AudioVolume:   1.0,
@@ -151,6 +166,12 @@ func (p *Project) Validate() []error {
 	if p.Kind != "" && p.Kind != KindMultitrack {
 		errs = append(errs, fmt.Errorf("project kind = %q (want %q)", p.Kind, KindMultitrack))
 	}
+	if p.Canvas.Width < 16 || p.Canvas.Height < 16 {
+		errs = append(errs, fmt.Errorf("canvas: %dx%d 太小（最小 16×16）", p.Canvas.Width, p.Canvas.Height))
+	}
+	if p.Canvas.FrameRate <= 0 || p.Canvas.FrameRate > 240 {
+		errs = append(errs, fmt.Errorf("canvas: frameRate %.2f 超出 (0, 240]", p.Canvas.FrameRate))
+	}
 
 	// Build a quick id -> kind map for clip-source lookups.
 	srcKind := make(map[string]string, len(p.Sources))
@@ -196,6 +217,9 @@ func (p *Project) Validate() []error {
 			if k != SourceVideo {
 				errs = append(errs, fmt.Errorf("videoTracks[%d][%d]: sourceId %q is %s, video track requires video", i, j, c.SourceID, k))
 			}
+			if c.Transform.W <= 0 || c.Transform.H <= 0 {
+				errs = append(errs, fmt.Errorf("videoTracks[%d][%d]: transform W/H 必须 > 0（当前 %dx%d）", i, j, c.Transform.W, c.Transform.H))
+			}
 		}
 	}
 
@@ -225,13 +249,21 @@ func (p *Project) Validate() []error {
 // Migrate brings an on-disk multitrack project up to the current schema.
 // Safe to call multiple times; a no-op on already-current projects.
 //
-// In v1 the only normalizations needed are defaults for fields that
-// JSON-decode to zero values:
+// v1 (initial): JSON zero-value normalisations:
 //   - AudioVolume <= 0 → 1.0 (unity)
 //   - per-track Volume <= 0 → 1.0
-//   - missing Kind → KindMultitrack (a file produced before Kind was added)
-//   - nil track / sources slices → empty slices, so JSON re-encodes as []
-//     not null (matches the wire shape the frontend expects).
+//   - missing Kind → KindMultitrack
+//   - nil track / sources slices → empty slices (so JSON re-encodes as []
+//     not null; the frontend expects [] for empty collections).
+//
+// v1 → v2 (v0.5.1): canvas + per-clip transform defaults so a v1 file
+// loads, validates, and exports visually identical to v0.5.0:
+//   - Canvas zero/missing → derived from max(referenced video sources)
+//     (same algorithm export.go used in v0.5.0). FrameRate ≤ 0 → 30.
+//   - Each video clip's Transform with W or H ≤ 0 → full canvas (0, 0,
+//     Canvas.Width, Canvas.Height), reproducing v0.5.0's "stretch source
+//     to canvas" behavior.
+//   - Audio clip Transform is left at zero; the export path ignores it.
 func (p *Project) Migrate() {
 	if p.Kind == "" {
 		p.Kind = KindMultitrack
@@ -259,6 +291,38 @@ func (p *Project) Migrate() {
 	for i := range p.VideoTracks {
 		if p.VideoTracks[i].Clips == nil {
 			p.VideoTracks[i].Clips = []Clip{}
+		}
+	}
+	// v1 → v2: canvas defaults from the referenced video sources, mirroring
+	// what v0.5.0 export computed on the fly.
+	if p.Canvas.Width <= 0 || p.Canvas.Height <= 0 {
+		w, h, fr := deriveDefaultCanvas(p)
+		if p.Canvas.Width <= 0 {
+			p.Canvas.Width = w
+		}
+		if p.Canvas.Height <= 0 {
+			p.Canvas.Height = h
+		}
+		if p.Canvas.FrameRate <= 0 {
+			p.Canvas.FrameRate = fr
+		}
+	}
+	if p.Canvas.FrameRate <= 0 {
+		p.Canvas.FrameRate = 30
+	}
+	// v1 → v2: each video clip's transform defaults to full canvas so
+	// existing projects export visually identical (single source → stretched
+	// to fill = same as canvas-sized scale+pad in v0.5.0 with the canvas
+	// derived from max(sources)).
+	for ti := range p.VideoTracks {
+		clips := p.VideoTracks[ti].Clips
+		for ci := range clips {
+			t := &clips[ci].Transform
+			if t.W <= 0 || t.H <= 0 {
+				t.X, t.Y = 0, 0
+				t.W = p.Canvas.Width
+				t.H = p.Canvas.Height
+			}
 		}
 	}
 	p.SchemaVersion = SchemaVersion
