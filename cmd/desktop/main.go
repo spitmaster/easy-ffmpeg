@@ -8,7 +8,7 @@
 // to import github.com/wailsapp/wails/v2/*. Everything else stays cgo-free
 // so the Web build keeps its CGO_ENABLED=0 cross-compile property.
 //
-// See design/v0.4.0-architecture.md.
+// See docs/core/desktop.md.
 package main
 
 import (

@@ -39,9 +39,10 @@ func (proberAdapter) Probe(_ context.Context, path string) (*ports.VideoInfo, er
 	return info, nil
 }
 
-// jobRunnerAdapter adapts *job.Manager to ports.JobRunner. Sharing the
-// same manager instance with convert/audio ensures only one ffmpeg job
-// runs at a time across the whole app.
+// jobRunnerAdapter adapts *job.Manager to commonports.JobRunner. Sharing
+// the same manager instance with convert/audio ensures only one ffmpeg
+// job runs at a time across the whole app (and, in v0.6.x+, with the
+// multitrack editor too).
 type jobRunnerAdapter struct{ m *job.Manager }
 
 func (a jobRunnerAdapter) Start(binary string, args []string) error {
@@ -51,7 +52,7 @@ func (a jobRunnerAdapter) Cancel()       { a.m.Cancel() }
 func (a jobRunnerAdapter) Running() bool { return a.m.Running() }
 
 // pathResolverAdapter adapts service.GetFFmpegPath / GetFFprobePath to
-// ports.PathResolver.
+// commonports.PathResolver.
 type pathResolverAdapter struct{}
 
 func (pathResolverAdapter) FFmpegPath() string  { return service.GetFFmpegPath() }

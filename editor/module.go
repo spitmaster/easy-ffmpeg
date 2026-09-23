@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"easy-ffmpeg/editor/api"
+	commonports "easy-ffmpeg/editor/common/ports"
 	"easy-ffmpeg/editor/ports"
 	"easy-ffmpeg/editor/storage"
 )
@@ -21,12 +22,16 @@ import (
 // Deps bundles all external capabilities the editor needs. Supplying
 // different implementations (real vs. fake) is how tests and the
 // standalone exe parameterize the module.
+//
+// Clock / Runner / Paths come from editor/common/ports — multitrack uses
+// the same interfaces. Prober is single-video specific (multitrack will
+// add its own MediaProber port).
 type Deps struct {
 	Prober  ports.VideoProber
-	Runner  ports.JobRunner
-	Paths   ports.PathResolver
-	Clock   ports.Clock // nil → wallClock
-	DataDir string      // where projects/<id>.json are stored
+	Runner  commonports.JobRunner
+	Paths   commonports.PathResolver
+	Clock   commonports.Clock // nil → wallClock
+	DataDir string            // where projects/<id>.json are stored
 }
 
 // Module is a constructed editor ready to be mounted on an http.ServeMux.

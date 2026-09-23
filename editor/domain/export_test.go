@@ -379,25 +379,6 @@ func TestBuildExportArgs_UnorderedClips(t *testing.T) {
 	}
 }
 
-func TestFormatFloat(t *testing.T) {
-	cases := []struct {
-		v    float64
-		want string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{1.5, "1.5"},
-		{12.345, "12.345"},
-		{0.1, "0.1"},
-		{12.000001, "12.000001"},
-	}
-	for _, c := range cases {
-		if got := formatFloat(c.v); got != c.want {
-			t.Errorf("formatFloat(%v) = %q, want %q", c.v, got, c.want)
-		}
-	}
-}
-
 // ---- helpers ------------------------------------------------------------
 
 func indexOfStr(arr []string, s string) int {

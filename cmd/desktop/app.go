@@ -14,7 +14,7 @@ import (
 // business logic lives in the shared *server.Server, identical to the Web
 // build. This struct only owns "when to start" and "when to stop".
 //
-// See design/v0.4.0-architecture.md §4.1.
+// See docs/core/desktop.md §4.1.
 type App struct {
 	ctx context.Context
 	srv *server.Server

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	commonports "easy-ffmpeg/editor/common/ports"
 	"easy-ffmpeg/editor/domain"
 	"easy-ffmpeg/editor/ports"
 )
@@ -19,14 +20,14 @@ import (
 // used today; reserved).
 type ExportHandlers struct {
 	repo   ports.ProjectRepository
-	runner ports.JobRunner
-	paths  ports.PathResolver
+	runner commonports.JobRunner
+	paths  commonports.PathResolver
 
 	mu          sync.Mutex
 	lastCommand string
 }
 
-func NewExportHandlers(repo ports.ProjectRepository, runner ports.JobRunner, paths ports.PathResolver) *ExportHandlers {
+func NewExportHandlers(repo ports.ProjectRepository, runner commonports.JobRunner, paths commonports.PathResolver) *ExportHandlers {
 	return &ExportHandlers{repo: repo, runner: runner, paths: paths}
 }
 

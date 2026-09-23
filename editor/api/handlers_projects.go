@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	commonports "easy-ffmpeg/editor/common/ports"
 	"easy-ffmpeg/editor/domain"
 	"easy-ffmpeg/editor/ports"
 )
@@ -16,10 +17,10 @@ import (
 type ProjectHandlers struct {
 	repo   ports.ProjectRepository
 	prober ports.VideoProber
-	clock  ports.Clock
+	clock  commonports.Clock
 }
 
-func NewProjectHandlers(repo ports.ProjectRepository, prober ports.VideoProber, clock ports.Clock) *ProjectHandlers {
+func NewProjectHandlers(repo ports.ProjectRepository, prober ports.VideoProber, clock commonports.Clock) *ProjectHandlers {
 	return &ProjectHandlers{repo: repo, prober: prober, clock: clock}
 }
 

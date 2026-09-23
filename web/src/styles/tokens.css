@@ -1,0 +1,33 @@
+/*
+ * Design tokens — single source of truth for colors, spacing, and motion.
+ *
+ * Values are stored as RGB triples (no rgb() wrapper) so Tailwind's
+ * `<alpha-value>` interpolation works (see tailwind.config.js).
+ *
+ * Palette is dark-first, tuned for a dense, professional NLE-style UI
+ * (Premiere Pro / DaVinci Resolve aesthetic). M3 will reuse these tokens
+ * for the timeline canvas, so any change here propagates automatically.
+ */
+:root {
+  /* Background layers — base < panel < elevated */
+  --color-bg-base: 18 18 20;          /* page background */
+  --color-bg-panel: 28 28 32;         /* tab panel */
+  --color-bg-elevated: 38 38 44;      /* cards, modals */
+
+  /* Foreground tiers — base for body, muted for labels, subtle for hints */
+  --color-fg-base: 224 224 228;
+  --color-fg-muted: 168 168 176;
+  --color-fg-subtle: 120 120 128;
+
+  /* Borders — base for separators, strong for active focus */
+  --color-border-base: 56 56 62;
+  --color-border-strong: 92 92 100;
+
+  /* Accent — primary action color */
+  --color-accent: 96 165 250;         /* sky-400 */
+  --color-accent-hover: 129 184 255;
+
+  /* Status */
+  --color-danger: 248 113 113;        /* red-400 */
+  --color-success: 74 222 128;        /* green-400 */
+}

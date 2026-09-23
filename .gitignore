@@ -39,3 +39,10 @@ build/
 cmd/desktop/build/bin/
 cmd/desktop/wailsjs/
 cmd/desktop/frontend/wailsjs/
+
+# Frontend (Vue 3) — sources live in web/src, build output goes to web/dist.
+# .gitkeep is committed so //go:embed all:dist in web/embed.go succeeds on
+# fresh clones before npm run build has populated the directory.
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep

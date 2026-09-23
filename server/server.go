@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"easy-ffmpeg/internal/job"
-	"embed"
+	"easy-ffmpeg/web"
 	"io/fs"
 	"log"
 	"net"
@@ -11,9 +11,6 @@ import (
 	"strings"
 	"time"
 )
-
-//go:embed web
-var webRoot embed.FS
 
 type Server struct {
 	httpSrv *http.Server
@@ -52,7 +49,7 @@ func logMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
-	sub, _ := fs.Sub(webRoot, "web")
+	sub, _ := fs.Sub(web.FS, "dist")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
 	mux.HandleFunc("/api/ffmpeg/status", s.handleFFmpegStatus)
@@ -78,6 +75,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	} else {
 		mod.Register(mux, "/api/editor")
 		log.Printf("editor: mounted at /api/editor (data: %s)", dataDir)
+	}
+
+	// Multitrack editor module — registers /api/multitrack/* routes.
+	// Same non-fatal failure mode as the single-video editor.
+	if mod, dataDir, err := s.buildMultitrackModule(); err != nil {
+		log.Printf("multitrack: disabled (%v)", err)
+	} else {
+		mod.Register(mux, "/api/multitrack")
+		log.Printf("multitrack: mounted at /api/multitrack (data: %s)", dataDir)
 	}
 }
 
